@@ -11,17 +11,8 @@ def load_geojson(path):
     Attempt to load a GeoJSON file into a GeoDataFrame.
     Try pyogrio (default), then Fiona, then manual JSON parsing.
     """
-    # 1) default engine (pyogrio)
-    try:
-        return gpd.read_file(path)
-    except Exception as e1:
-        print(f"Warning: pyogrio failed to read {path}: {e1}")
-    # 2) Fiona
-    try:
-        return gpd.read_file(path, engine="fiona")
-    except Exception as e2:
-        print(f"Warning: Fiona failed to read {path}: {e2}")
-    # 3) manual JSON
+
+    # manual JSON
     try:
         with open(path) as f:
             gj = json.load(f)
