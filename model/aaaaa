@@ -1,0 +1,105 @@
+
+# pip install pandas scikit-learn torch pytorch-tabnet
+
+import pandas as pd
+import torch
+from sklearn.model_selection import train_test_split
+from pytorch_tabnet.tab_model import TabNetRegressor
+import os
+import warnings
+
+# Load & prepare the ALL-CRIMES dataset
+
+df = pd.read_csv("processed/final_dataset_all.csv")
+
+
+df['date'] = pd.to_datetime(df[['year','month']].assign(day=1))
+df = df.sort_values(['ward_code','date'])
+
+
+# Add 1-month & 3-month lag features of the target
+
+TARGET = 'burglary_count'  
+
+for lag in (1, 3):
+    df[f'{TARGET}_lag_{lag}'] = (
+        df.groupby('ward_code')[TARGET]
+          .shift(lag)
+    )
+
+# Drop rows with missing lag values
+df = df.dropna(subset=[f'{TARGET}_lag_1', f'{TARGET}_lag_3'])
+
+
+# Prepare X, y and encode categorical features
+
+X = df.drop(columns=[TARGET, 'date'])
+y = df[TARGET].values
+
+# Integer-encode ward_code
+X['ward_code'] = X['ward_code'].astype('category').cat.codes
+
+# Indices & cardinalities for categorical embeddings
+cat_idxs = [X.columns.get_loc('ward_code')]
+cat_dims = [X['ward_code'].nunique()]
+
+
+# Train/test split (70/30), preserving time order
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X.values, y, test_size=0.3, shuffle=False
+)
+
+# Reshape targets to (n_samples, 1) for TabNet
+y_train = y_train.reshape(-1, 1)
+y_test  = y_test.reshape(-1, 1)
+
+
+# Detect GPU & instantiate TabNet
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
+
+model = TabNetRegressor(
+    n_d=8,
+    n_a=8,
+    n_steps=3,
+    gamma=1.3,
+    cat_idxs=cat_idxs,
+    cat_dims=cat_dims,
+    cat_emb_dim=1,
+    optimizer_fn=torch.optim.Adam,
+    optimizer_params=dict(lr=2e-2),
+    scheduler_fn=torch.optim.lr_scheduler.StepLR,
+    scheduler_params={"step_size":50, "gamma":0.9},
+    mask_type='sparsemax',
+    device_name=device
+)
+
+
+# Train (prints per-epoch metrics by default)
+
+model.fit(
+    X_train,
+    y_train,
+    eval_set=[(X_test, y_test)],
+    eval_name=['test'],
+    eval_metric=['rmse'],
+    max_epochs=10,
+    patience=20,
+    batch_size=1024,
+    virtual_batch_size=128
+)
+
+
+# Save the trained model
+
+save_name = 'tabnet_all_crimes_gpu'
+model.save_model(save_name)
+
+
+zip_path = os.path.abspath(save_name + '.zip')
+json_path = os.path.abspath(save_name + '.json')
+
+print(f"Model weights and architecture saved to: {zip_path}")
+print(f"Metadata saved to: {json_path}")
