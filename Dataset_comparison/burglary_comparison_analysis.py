@@ -18,8 +18,8 @@ merged_df = df_all.merge(
 merged_df["burglary_diff"] = merged_df["all_crime_count"] - merged_df["res_burglary_count"]
 correlation = merged_df[["all_crime_count", "res_burglary_count"]].corr().iloc[0, 1]
 
-print(f"Correlation between all and residential burglary counts: {correlation:.2f}")
-print("\nSummary statistics of the difference (all - residential):")
+print(f"Correlation between all crime and residential burglary counts: {correlation:.2f}")
+print("\nSummary statistics of the difference:")
 print(merged_df["burglary_diff"].describe())
 
 plt.figure(figsize=(8, 6))
