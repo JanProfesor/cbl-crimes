@@ -1,0 +1,148 @@
+# REQUIREMENTS:
+# pip install pandas scikit-learn torch pytorch-tabnet optuna tqdm
+
+import os
+import json
+import pandas as pd
+import numpy as np
+import torch
+from sklearn.model_selection import TimeSeriesSplit, train_test_split
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from pytorch_tabnet.tab_model import TabNetRegressor
+import optuna
+
+# ——————————————————————————————————————————————————————————
+# 0. Load & preprocess data
+# ——————————————————————————————————————————————————————————
+df = pd.read_csv("processed/final_dataset_all.csv")
+df['date'] = pd.to_datetime(df[['year','month']].assign(day=1))
+df = df.sort_values(['ward_code','date'])
+
+TARGET = 'burglary_count'
+for lag in (1, 3):
+    df[f'{TARGET}_lag_{lag}'] = df.groupby('ward_code')[TARGET].shift(lag)
+df = df.dropna(subset=[f'{TARGET}_lag_1', f'{TARGET}_lag_3'])
+
+X = df.drop(columns=[TARGET, 'date'])
+y = df[TARGET].values.reshape(-1, 1)
+
+# encode categorical ward_code
+X['ward_code'] = X['ward_code'].astype('category').cat.codes
+cat_idxs = [X.columns.get_loc('ward_code')]
+cat_dims = [X['ward_code'].nunique()]
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("Using device:", device)
+
+# ——————————————————————————————————————————————————————————
+# 1. 5‐fold TimeSeriesSplit with RMSE, MAE, R²
+# ——————————————————————————————————————————————————————————
+tscv = TimeSeriesSplit(n_splits=5)
+metrics = {'rmse': [], 'mae': [], 'r2': []}
+
+for fold, (train_idx, val_idx) in enumerate(tscv.split(X), 1):
+    X_tr, X_val = X.values[train_idx], X.values[val_idx]
+    y_tr, y_val = y[train_idx], y[val_idx]
+
+    model = TabNetRegressor(
+        n_d=8, n_a=8, n_steps=3, gamma=1.3,
+        cat_idxs=cat_idxs, cat_dims=cat_dims, cat_emb_dim=1,
+        optimizer_fn=torch.optim.Adam, optimizer_params=dict(lr=2e-2),
+        scheduler_fn=torch.optim.lr_scheduler.StepLR,
+        scheduler_params={"step_size":50, "gamma":0.9},
+        mask_type='sparsemax',
+        device_name=device
+    )
+    model.fit(
+        X_tr, y_tr,
+        eval_set=[(X_val, y_val)],
+        eval_name=['val'],
+        eval_metric=['rmse','mae'],
+        max_epochs=50,
+        patience=10,
+        batch_size=1024,
+        virtual_batch_size=128
+    )
+
+    preds = model.predict(X_val)
+    rmse = mean_squared_error(y_val, preds, squared=False)
+    mae  = mean_absolute_error(y_val, preds)
+    r2   = r2_score(y_val, preds)
+
+    metrics['rmse'].append(rmse)
+    metrics['mae'].append(mae)
+    metrics['r2'].append(r2)
+
+    print(f"Fold {fold} — RMSE: {rmse:.3f}, MAE: {mae:.3f}, R²: {r2:.3f}")
+
+# summary
+print("\nCross-fold means ± std:")
+for m, vals in metrics.items():
+    arr = np.array(vals)
+    print(f"  {m.upper()}: {arr.mean():.3f} ± {arr.std():.3f}")
+
+# save CV metrics
+cv_df = pd.DataFrame(metrics)
+cv_df.to_csv("cv_metrics.csv", index=False)
+print("✅ Saved cross-validation metrics to cv_metrics.csv")
+
+# ——————————————————————————————————————————————————————————
+# 2. Optuna hyperparameter search (20 trials)
+# ——————————————————————————————————————————————————————————
+def objective(trial):
+    n_d     = trial.suggest_int("n_d",      8, 64)
+    n_steps = trial.suggest_int("n_steps",  3, 10)
+    lr      = trial.suggest_float("lr", 1e-4, 1e-1, log=True)
+
+    # time-ordered 70/30 split
+    X_tr, X_val, y_tr, y_val = train_test_split(
+        X.values, y, test_size=0.3, shuffle=False
+    )
+    y_tr = y_tr.reshape(-1, 1)
+    y_val = y_val.reshape(-1, 1)
+
+    m = TabNetRegressor(
+        n_d=n_d, n_a=n_d, n_steps=n_steps, gamma=1.3,
+        cat_idxs=cat_idxs, cat_dims=cat_dims, cat_emb_dim=1,
+        optimizer_fn=torch.optim.Adam, optimizer_params=dict(lr=lr),
+        scheduler_fn=torch.optim.lr_scheduler.StepLR,
+        scheduler_params={"step_size":30, "gamma":0.9},
+        mask_type='sparsemax',
+        device_name=device
+    )
+    m.fit(
+        X_tr, y_tr,
+        eval_set=[(X_val, y_val)],
+        eval_name=['val'],
+        eval_metric=['rmse'],
+        max_epochs=30,
+        patience=5,
+        batch_size=1024,
+        virtual_batch_size=128
+    )
+
+    # optional: save each trial’s model
+    m.save_model(f"tabnet_trial_{trial.number}.zip")
+
+    preds = m.predict(X_val)
+    return mean_squared_error(y_val, preds, squared=False)
+
+study = optuna.create_study(direction="minimize")
+study.optimize(objective, n_trials=20, show_progress_bar=True)
+
+# print best
+print("Best trial RMSE:", study.best_value)
+print("Best hyperparameters:", study.best_trial.params)
+
+# save Optuna trials to CSV
+trials_df = study.trials_dataframe()
+trials_df.to_csv("optuna_trials.csv", index=False)
+print("✅ Saved Optuna trials to optuna_trials.csv")
+
+# save best params & value
+with open("optuna_best.json", "w") as f:
+    json.dump({
+        "best_rmse": study.best_value,
+        "best_params": study.best_trial.params
+    }, f, indent=2)
+print("✅ Saved best trial info to optuna_best.json")
