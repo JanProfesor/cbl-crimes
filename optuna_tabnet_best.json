@@ -1,0 +1,22 @@
+{
+  "best_rmse": 3.4619323575298253,
+  "best_params": {
+    "n_d": 87,
+    "n_a": 67,
+    "n_steps": 3,
+    "gamma": 2.9789230888111398,
+    "lr": 0.011065469301301083,
+    "weight_decay": 0.0019716426920030664,
+    "batch_size": 256,
+    "virtual_batch_size": 128,
+    "momentum": 0.6454639265802251,
+    "optimizer": "AdamW",
+    "scheduler": "StepLR",
+    "step_size": 10,
+    "gamma_lr": 0.7933772995677532,
+    "cat_emb_dim": 3,
+    "patience": 18
+  },
+  "best_mae": 2.613555987675985,
+  "best_r2": 0.38561256726582843
+}

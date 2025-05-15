@@ -18,798 +18,814 @@ from optuna.pruners import MedianPruner
 from optuna.samplers import TPESampler
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+from multiprocessing import freeze_support
+import warnings
 
-# Set seeds for reproducibility
-RANDOM_SEED = 42
-np.random.seed(RANDOM_SEED)
-torch.manual_seed(RANDOM_SEED)
+
+def main():    
+    
+    # Set seeds for reproducibility
+    RANDOM_SEED = 42
+    np.random.seed(RANDOM_SEED)
+    torch.manual_seed(RANDOM_SEED)
 
 # ―――――――――――――――――――――――――――
 # 0. Load & preprocess with enhanced features
 # ―――――――――――――――――――――――――――
-df = pd.read_csv("processed/final_dataset_residential_burglary.csv")
-df['date'] = pd.to_datetime(df[['year','month']].assign(day=1))
-df = df.sort_values(['ward_code','date'])
+    df = pd.read_csv("processed/final_dataset_residential_burglary.csv")
+    df['date'] = pd.to_datetime(df[['year','month']].assign(day=1))
+    df = df.sort_values(['ward_code','date'])
 
-TARGET = 'burglary_count'
+    TARGET = 'burglary_count'
 
-# Create more features
-# More extensive lags - both recent and seasonal
-for lag in (1, 2, 3, 6, 12):
-    df[f'{TARGET}_lag_{lag}'] = df.groupby('ward_code')[TARGET].shift(lag)
+    # Create more features
+    # More extensive lags - both recent and seasonal
+    for lag in (1, 2, 3, 6, 12):
+        df[f'{TARGET}_lag_{lag}'] = df.groupby('ward_code')[TARGET].shift(lag)
 
-# Rolling statistics (mean, std, min, max)
-for window in [3, 6]:
-    df[f'{TARGET}_roll_mean_{window}'] = df.groupby('ward_code')[TARGET].transform(
-        lambda x: x.shift(1).rolling(window=window, min_periods=1).mean())
-    df[f'{TARGET}_roll_std_{window}'] = df.groupby('ward_code')[TARGET].transform(
-        lambda x: x.shift(1).rolling(window=window, min_periods=1).std())
-    df[f'{TARGET}_roll_max_{window}'] = df.groupby('ward_code')[TARGET].transform(
-        lambda x: x.shift(1).rolling(window=window, min_periods=1).max())
-    df[f'{TARGET}_roll_min_{window}'] = df.groupby('ward_code')[TARGET].transform(
-        lambda x: x.shift(1).rolling(window=window, min_periods=1).min())
+    # Rolling statistics (mean, std, min, max)
+    for window in [3, 6]:
+        df[f'{TARGET}_roll_mean_{window}'] = df.groupby('ward_code')[TARGET].transform(
+            lambda x: x.shift(1).rolling(window=window, min_periods=1).mean())
+        df[f'{TARGET}_roll_std_{window}'] = df.groupby('ward_code')[TARGET].transform(
+            lambda x: x.shift(1).rolling(window=window, min_periods=1).std())
+        df[f'{TARGET}_roll_max_{window}'] = df.groupby('ward_code')[TARGET].transform(
+            lambda x: x.shift(1).rolling(window=window, min_periods=1).max())
+        df[f'{TARGET}_roll_min_{window}'] = df.groupby('ward_code')[TARGET].transform(
+            lambda x: x.shift(1).rolling(window=window, min_periods=1).min())
 
-# Trend indicators
-df['trend_1m'] = df[f'{TARGET}_lag_1'] - df[f'{TARGET}_lag_2']
-df['trend_3m'] = df[f'{TARGET}_lag_1'] - df[f'{TARGET}_lag_3']
-df['trend_6m'] = df[f'{TARGET}_lag_1'] - df[f'{TARGET}_lag_6']
+    # Trend indicators
+    df['trend_1m'] = df[f'{TARGET}_lag_1'] - df[f'{TARGET}_lag_2']
+    df['trend_3m'] = df[f'{TARGET}_lag_1'] - df[f'{TARGET}_lag_3']
+    df['trend_6m'] = df[f'{TARGET}_lag_1'] - df[f'{TARGET}_lag_6']
 
-# Enhanced cyclical features for seasonality
-df['month_num'] = df['date'].dt.month
-df['quarter'] = df['date'].dt.quarter
-df['year_mod'] = df['date'].dt.year % 10  # Capture decade-level patterns
+    # Enhanced cyclical features for seasonality
+    df['month_num'] = df['date'].dt.month
+    df['quarter'] = df['date'].dt.quarter
+    df['year_mod'] = df['date'].dt.year % 10  # Capture decade-level patterns
 
-# Cyclical encoding for month and quarter
-for col, max_val in [('month_num', 12), ('quarter', 4)]:
-    df[f'{col}_sin'] = np.sin(2 * np.pi * df[col] / max_val)
-    df[f'{col}_cos'] = np.cos(2 * np.pi * df[col] / max_val)
+    # Cyclical encoding for month and quarter
+    for col, max_val in [('month_num', 12), ('quarter', 4)]:
+        df[f'{col}_sin'] = np.sin(2 * np.pi * df[col] / max_val)
+        df[f'{col}_cos'] = np.cos(2 * np.pi * df[col] / max_val)
 
-# Ward-level statistics
-ward_stats = df.groupby('ward_code')[TARGET].agg(['mean', 'std', 'median'])
-ward_stats.columns = [f'ward_{TARGET}_{col}' for col in ward_stats.columns]
-df = df.merge(ward_stats, on='ward_code')
+    # Ward-level statistics
+    ward_stats = df.groupby('ward_code')[TARGET].agg(['mean', 'std', 'median'])
+    ward_stats.columns = [f'ward_{TARGET}_{col}' for col in ward_stats.columns]
+    df = df.merge(ward_stats, on='ward_code')
 
-# Drop rows with NaN (due to lags)
-df.dropna(inplace=True)
+    # Drop rows with NaN (due to lags)
+    df.dropna(inplace=True)
 
-print(f"Dataset shape after preprocessing: {df.shape}")
+    print(f"Dataset shape after preprocessing: {df.shape}")
 
-# Prepare features and target
-X = df.drop(columns=[TARGET, 'date'])
-y = df[TARGET].values
+    # Prepare features and target
+    X = df.drop(columns=[TARGET, 'date'])
+    y = df[TARGET].values
 
-# Feature encoding
-cat_cols = ['ward_code', 'year_mod', 'quarter']
-for col in cat_cols:
-    X[col] = X[col].astype('category').cat.codes
+    # Feature encoding
+    cat_cols = ['ward_code', 'year_mod', 'quarter']
+    for col in cat_cols:
+        X[col] = X[col].astype('category').cat.codes
 
-# Get indices for TabNet
-cat_idxs = [X.columns.get_loc(col) for col in cat_cols]
-cat_dims = [X[col].nunique() for col in cat_cols]
+    # Get indices for TabNet
+    cat_idxs = [X.columns.get_loc(col) for col in cat_cols]
+    cat_dims = [X[col].nunique() for col in cat_cols]
 
-# Create 80/20 time-based split (the final 20% as hold-out set)
-split_idx = int(len(X) * 0.8)
-X_full, X_hold = X.iloc[:split_idx].values, X.iloc[split_idx:].values
-y_full, y_hold = y[:split_idx].reshape(-1, 1), y[split_idx:].reshape(-1, 1)
+    # Create 80/20 time-based split (the final 20% as hold-out set)
+    split_idx = int(len(X) * 0.8)
+    X_full, X_hold = X.iloc[:split_idx].values, X.iloc[split_idx:].values
+    y_full, y_hold = y[:split_idx].reshape(-1, 1), y[split_idx:].reshape(-1, 1)
 
-# For tree-based models, we'll keep y as 1D arrays
-y_full_1d, y_hold_1d = y_full.ravel(), y_hold.ravel()
+    # For tree-based models, we'll keep y as 1D arrays
+    y_full_1d, y_hold_1d = y_full.ravel(), y_hold.ravel()
 
-# Feature scaling for linear models
-scaler = StandardScaler()
-X_full_scaled = scaler.fit_transform(X_full)
-X_hold_scaled = scaler.transform(X_hold)
+    # Feature scaling for linear models
+    scaler = StandardScaler()
+    X_full_scaled = scaler.fit_transform(X_full)
+    X_hold_scaled = scaler.transform(X_hold)
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print("Using device:", device)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print("Using device:", device)
 
-# ―――――――――――――――――――――――――――
-# 1. Enhanced Baseline Evaluation (5-fold CV)
-# ―――――――――――――――――――――――――――
-# Use 5-fold Time Series CV for more robust evaluation
-tscv = TimeSeriesSplit(n_splits=5)
+    # ―――――――――――――――――――――――――――
+    # 1. Enhanced Baseline Evaluation (5-fold CV)
+    # ―――――――――――――――――――――――――――
+    # Use 5-fold Time Series CV for more robust evaluation
+    tscv = TimeSeriesSplit(n_splits=5)
 
-print("\n=== Enhanced Baseline 5-fold CV ===")
-models = {
-    "TabNet": {
-        "model": TabNetRegressor(
-            n_d=32, n_a=32, n_steps=5, gamma=1.5,
-            cat_idxs=cat_idxs, cat_dims=cat_dims, cat_emb_dim=2,
-            optimizer_fn=torch.optim.Adam, optimizer_params={'lr': 2e-2},
-            scheduler_fn=torch.optim.lr_scheduler.CosineAnnealingLR,
-            scheduler_params={'T_max': 100},
-            mask_type='sparsemax', device_name=device
-        ),
-        "fit_params": {
-            "max_epochs": 100, "patience": 10,
-            "batch_size": 512, "virtual_batch_size": 128
+    print("\n=== Enhanced Baseline 5-fold CV ===")
+    models = {
+        "TabNet": {
+            "model": TabNetRegressor(
+                n_d=32, n_a=32, n_steps=5, gamma=1.5,
+                cat_idxs=cat_idxs, cat_dims=cat_dims, cat_emb_dim=2,
+                optimizer_fn=torch.optim.Adam, optimizer_params={'lr': 2e-2},
+                scheduler_fn=torch.optim.lr_scheduler.CosineAnnealingLR,
+                scheduler_params={'T_max': 50},
+                mask_type='sparsemax', device_name=device
+            ),
+            "fit_params": {
+                "max_epochs": 100, "patience": 10,
+                "batch_size": 4096, "virtual_batch_size": 4096,
+                "num_workers": 0, "drop_last": True
+            },
+            "is_tabnet": True
         },
-        "is_tabnet": True
-    },
-    "XGBoost": {
-        "model": xgb.XGBRegressor(
-            n_estimators=300, learning_rate=0.05, max_depth=6,
-            subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=1,
-            tree_method='gpu_hist' if device == 'cuda' else 'hist',
-            random_state=RANDOM_SEED
-        ),
-        "is_tabnet": False
-    },
-    "LightGBM": {
-        "model": lgb.LGBMRegressor(
-            n_estimators=300, learning_rate=0.05, num_leaves=31,
-            subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=1,
-            random_state=RANDOM_SEED
-        ),
-        "is_tabnet": False
-    },
-    "CatBoost": {
-        "model": cb.CatBoostRegressor(
-            iterations=300, learning_rate=0.05, depth=6,
-            subsample=0.8, colsample_bylevel=0.8, l2_leaf_reg=3,
-            random_seed=RANDOM_SEED, verbose=0
-        ),
-        "is_tabnet": False
-    },
-    "Ridge": {
-        "model": Ridge(alpha=1.0, random_state=RANDOM_SEED),
-        "is_tabnet": False
+        "XGBoost": {
+            "model": xgb.XGBRegressor(
+                n_estimators=300, learning_rate=0.05, max_depth=6,
+                subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=1,
+                tree_method='gpu_hist' if device == 'cuda' else 'hist',
+                random_state=RANDOM_SEED
+            ),
+            "is_tabnet": False
+        },
+        "LightGBM": {
+            "model": lgb.LGBMRegressor(
+                n_estimators=300, learning_rate=0.05, num_leaves=31,
+                subsample=0.8, colsample_bytree=0.8, reg_alpha=0.1, reg_lambda=1,
+                random_state=RANDOM_SEED
+            ),
+            "is_tabnet": False
+        },
+        "CatBoost": {
+            "model": cb.CatBoostRegressor(
+                iterations=300, learning_rate=0.05, depth=6,
+                subsample=0.8, colsample_bylevel=0.8, l2_leaf_reg=3,
+                random_seed=RANDOM_SEED, verbose=0
+            ),
+            "is_tabnet": False
+        },
+        "Ridge": {
+            "model": Ridge(alpha=1.0, random_state=RANDOM_SEED),
+            "is_tabnet": False
+        }
     }
-}
 
-baseline_results = {}
+    baseline_results = {}
 
-for name, model_info in models.items():
-    print(f"\nEvaluating {name}...")
-    rmses, maes, r2s = [], [], []
-    
-    for fold, (train_idx, val_idx) in enumerate(tscv.split(X_full), 1):
-        X_train, X_val = X_full[train_idx], X_full[val_idx]
-        y_train, y_val = y_full[train_idx], y_full[val_idx]
+    for name, model_info in models.items():
+        print(f"\nEvaluating {name}...")
+        rmses, maes, r2s = [], [], []
         
-        if name == "Ridge":
-            X_train = X_full_scaled[train_idx]
-            X_val = X_full_scaled[val_idx]
-            y_train_use = y_train.ravel()
-        else:
-            y_train_use = y_train.ravel() if not model_info["is_tabnet"] else y_train
+        for fold, (train_idx, val_idx) in enumerate(tscv.split(X_full), 1):
+            X_train, X_val = X_full[train_idx], X_full[val_idx]
+            y_train, y_val = y_full[train_idx], y_full[val_idx]
+            
+            if name == "Ridge":
+                X_train = X_full_scaled[train_idx]
+                X_val = X_full_scaled[val_idx]
+                y_train_use = y_train.ravel()
+            else:
+                y_train_use = y_train.ravel() if not model_info["is_tabnet"] else y_train
+            
+            # Fit model
+            if model_info["is_tabnet"]:
+                model_info["model"].fit(
+                    X_train, y_train_use,
+                    eval_set=[(X_val, y_val)],
+                    eval_name=['val'], eval_metric=['rmse'],
+                    **model_info["fit_params"]
+                )
+            else:
+                model_info["model"].fit(X_train, y_train_use)
+            
+            # Predict
+            y_pred = model_info["model"].predict(X_val)
+            if model_info["is_tabnet"]:
+                y_val = y_val.reshape(-1)
+            else:
+                y_val = y_val.ravel()
+            
+            # Calculate metrics
+            rmse = np.sqrt(mean_squared_error(y_val, y_pred))
+            mae = mean_absolute_error(y_val, y_pred)
+            r2 = r2_score(y_val, y_pred)
+            
+            rmses.append(rmse)
+            maes.append(mae)
+            r2s.append(r2)
+            
+            print(f"  Fold {fold}: RMSE={rmse:.3f}, MAE={mae:.3f}, R²={r2:.3f}")
         
-        # Fit model
-        if model_info["is_tabnet"]:
-            model_info["model"].fit(
-                X_train, y_train_use,
-                eval_set=[(X_val, y_val)],
-                eval_name=['val'], eval_metric=['rmse'],
-                **model_info["fit_params"]
+        # Average metrics
+        avg_rmse = np.mean(rmses)
+        avg_mae = np.mean(maes)
+        avg_r2 = np.mean(r2s)
+        
+        print(f"{name} Avg: RMSE={avg_rmse:.3f}, MAE={avg_mae:.3f}, R²={avg_r2:.3f}")
+        
+        baseline_results[name] = {
+            "rmse": avg_rmse,
+            "mae": avg_mae,
+            "r2": avg_r2
+        }
+
+    # Save baseline results
+    with open("baseline_results.json", "w") as f:
+        json.dump(baseline_results, f, indent=2)
+
+    # ―――――――――――――――――――――――――――
+    # 2. Advanced Optuna Tuning for Multiple Models
+    # ―――――――――――――――――――――――――――
+    # Define a more sophisticated Optuna setup
+    print("\n=== Running Advanced Optuna Tuning ===")
+
+    # Create a sampler that focuses on the promising areas
+    sampler = TPESampler(seed=RANDOM_SEED)
+    # Use MedianPruner for more reliable pruning
+    pruner = MedianPruner(n_startup_trials=5, n_warmup_steps=5)
+
+    # Separate studies for each model type
+    studies = {}
+    best_models = {}
+
+    # Function to create study name
+    def get_study_name(model_name):
+        return f"burglary_prediction_{model_name.lower()}"
+
+    # TabNet objective function with expanded search space
+    def objective_tabnet(trial):
+        # More extensive TabNet parameter search
+        n_d = trial.suggest_int('n_d', 8, 128)
+        n_a = trial.suggest_int('n_a', 8, 128)
+        n_steps = trial.suggest_int('n_steps', 3, 10)
+        gamma = trial.suggest_float('gamma', 1.0, 3.0)
+        lr = trial.suggest_float('lr', 1e-4, 5e-2, log=True)
+        weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-2, log=True)
+        batch_size = trial.suggest_categorical('batch_size', [256, 512, 1024, 2048])
+        virtual_batch_size = trial.suggest_categorical('virtual_batch_size', [64, 128, 256])
+        momentum = trial.suggest_float('momentum', 0.01, 0.99)
+        
+        # Choose optimizer
+        optimizer_name = trial.suggest_categorical('optimizer', ['Adam', 'AdamW', 'SGD'])
+        if optimizer_name == 'Adam':
+            optimizer_fn = torch.optim.Adam
+            optimizer_params = {'lr': lr, 'weight_decay': weight_decay}
+        elif optimizer_name == 'AdamW':
+            optimizer_fn = torch.optim.AdamW
+            optimizer_params = {'lr': lr, 'weight_decay': weight_decay}
+        else:  # SGD
+            optimizer_fn = torch.optim.SGD
+            optimizer_params = {'lr': lr, 'momentum': momentum, 'weight_decay': weight_decay}
+        
+        # Choose scheduler
+        scheduler_name = trial.suggest_categorical('scheduler', ['CosineAnnealingLR', 'StepLR'])
+        if scheduler_name == 'CosineAnnealingLR':
+            scheduler_fn = torch.optim.lr_scheduler.CosineAnnealingLR
+            scheduler_params = {'T_max': 100}
+        else:  # StepLR
+            scheduler_fn = torch.optim.lr_scheduler.StepLR
+            step_size = trial.suggest_int('step_size', 5, 20)
+            gamma_lr = trial.suggest_float('gamma_lr', 0.5, 0.95)
+            scheduler_params = {'step_size': step_size, 'gamma': gamma_lr}
+
+        # Feature embedding
+        cat_emb_dim = trial.suggest_categorical('cat_emb_dim', [1, 2, 3, 5])
+        
+        # Early stopping
+        patience = trial.suggest_int('patience', 5, 20)
+        
+        # Cross-validation performance
+        rmses, maes, r2s = [], [], []
+        inner_cv = TimeSeriesSplit(n_splits=3)
+        
+        for fold, (train_idx, val_idx) in enumerate(inner_cv.split(X_full)):
+            X_train, X_val = X_full[train_idx], X_full[val_idx]
+            y_train, y_val = y_full[train_idx], y_full[val_idx]
+            
+            model = TabNetRegressor(
+                n_d=n_d, n_a=n_a, n_steps=n_steps, gamma=gamma,
+                cat_idxs=cat_idxs, cat_dims=cat_dims, cat_emb_dim=cat_emb_dim,
+                optimizer_fn=optimizer_fn, optimizer_params=optimizer_params,
+                scheduler_fn=scheduler_fn, scheduler_params=scheduler_params,
+                mask_type='sparsemax', device_name=device
             )
-        else:
-            model_info["model"].fit(X_train, y_train_use)
+            
+            model.fit(
+                X_train, y_train,
+                eval_set=[(X_val, y_val)], eval_name=['val'], eval_metric=['rmse'],
+                max_epochs=100, patience=patience,
+                batch_size=batch_size, virtual_batch_size=virtual_batch_size
+            )
+            
+            pred = model.predict(X_val)
+            rmse = np.sqrt(mean_squared_error(y_val.reshape(-1), pred.reshape(-1)))
+            mae = mean_absolute_error(y_val.reshape(-1), pred.reshape(-1))
+            r2 = r2_score(y_val.reshape(-1), pred.reshape(-1))
+            
+            rmses.append(rmse)
+            maes.append(mae)
+            r2s.append(r2)
+            
+            # Report intermediate value for pruning
+            trial.report(rmse, fold)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
         
-        # Predict
-        y_pred = model_info["model"].predict(X_val)
-        if model_info["is_tabnet"]:
-            y_val = y_val.reshape(-1)
-        else:
-            y_val = y_val.ravel()
+        # Log metrics
+        avg_rmse = float(np.mean(rmses))
+        avg_mae = float(np.mean(maes))
+        avg_r2 = float(np.mean(r2s))
         
-        # Calculate metrics
-        rmse = np.sqrt(mean_squared_error(y_val, y_pred))
-        mae = mean_absolute_error(y_val, y_pred)
-        r2 = r2_score(y_val, y_pred)
+        trial.set_user_attr('avg_mae', avg_mae)
+        trial.set_user_attr('avg_r2', avg_r2)
         
-        rmses.append(rmse)
-        maes.append(mae)
-        r2s.append(r2)
+        return avg_rmse
+
+    # XGBoost objective function
+    def objective_xgboost(trial):
+        params = {
+            'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
+            'max_depth': trial.suggest_int('max_depth', 3, 12),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
+            'subsample': trial.suggest_float('subsample', 0.5, 1.0),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
+            'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
+            'gamma': trial.suggest_float('gamma', 0, 5),
+            'reg_alpha': trial.suggest_float('reg_alpha', 1e-8, 1.0, log=True),
+            'reg_lambda': trial.suggest_float('reg_lambda', 1e-8, 1.0, log=True),
+            'tree_method': 'gpu_hist' if device == 'cuda' else 'hist',
+            'random_state': RANDOM_SEED
+        }
         
-        print(f"  Fold {fold}: RMSE={rmse:.3f}, MAE={mae:.3f}, R²={r2:.3f}")
-    
-    # Average metrics
-    avg_rmse = np.mean(rmses)
-    avg_mae = np.mean(maes)
-    avg_r2 = np.mean(r2s)
-    
-    print(f"{name} Avg: RMSE={avg_rmse:.3f}, MAE={avg_mae:.3f}, R²={avg_r2:.3f}")
-    
-    baseline_results[name] = {
-        "rmse": avg_rmse,
-        "mae": avg_mae,
-        "r2": avg_r2
+        rmses, maes, r2s = [], [], []
+        inner_cv = TimeSeriesSplit(n_splits=3)
+        
+        for fold, (train_idx, val_idx) in enumerate(inner_cv.split(X_full)):
+            X_train, X_val = X_full[train_idx], X_full[val_idx]
+            y_train, y_val = y_full_1d[train_idx], y_full_1d[val_idx]
+            
+            model = xgb.XGBRegressor(**params)
+            model.fit(
+                X_train, y_train, 
+                eval_set=[(X_val, y_val)],
+                callbacks=[xgb.callback.EarlyStopping(rounds=50)]
+            )
+            
+            pred = model.predict(X_val)
+            rmse = np.sqrt(mean_squared_error(y_val, pred))
+            mae = mean_absolute_error(y_val, pred)
+            r2 = r2_score(y_val, pred)
+            
+            rmses.append(rmse)
+            maes.append(mae)
+            r2s.append(r2)
+            
+            trial.report(rmse, fold)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+        
+        avg_rmse = float(np.mean(rmses))
+        avg_mae = float(np.mean(maes))
+        avg_r2 = float(np.mean(r2s))
+        
+        trial.set_user_attr('avg_mae', avg_mae)
+        trial.set_user_attr('avg_r2', avg_r2)
+        
+        return avg_rmse
+
+
+    # LightGBM objective function
+    def objective_lightgbm(trial):
+        params = {
+            'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
+            'num_leaves': trial.suggest_int('num_leaves', 15, 127),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
+            'subsample': trial.suggest_float('subsample', 0.5, 1.0),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
+            'min_child_samples': trial.suggest_int('min_child_samples', 5, 50),
+            'reg_alpha': trial.suggest_float('reg_alpha', 1e-8, 1.0, log=True),
+            'reg_lambda': trial.suggest_float('reg_lambda', 1e-8, 1.0, log=True),
+            'random_state': RANDOM_SEED
+        }
+        
+        rmses, maes, r2s = [], [], []
+        inner_cv = TimeSeriesSplit(n_splits=3)
+        
+        for fold, (train_idx, val_idx) in enumerate(inner_cv.split(X_full)):
+            X_train, X_val = X_full[train_idx], X_full[val_idx]
+            y_train, y_val = y_full_1d[train_idx], y_full_1d[val_idx]
+            
+            model = lgb.LGBMRegressor(**params)
+            # Use callbacks for early stopping instead of early_stopping_rounds parameter
+            model.fit(
+                X_train, y_train, 
+                eval_set=[(X_val, y_val)],
+                eval_metric='rmse',
+                callbacks=[lgb.early_stopping(stopping_rounds=50)]
+            )
+            
+            pred = model.predict(X_val)
+            rmse = np.sqrt(mean_squared_error(y_val, pred))
+            mae = mean_absolute_error(y_val, pred)
+            r2 = r2_score(y_val, pred)
+            
+            rmses.append(rmse)
+            maes.append(mae)
+            r2s.append(r2)
+            
+            trial.report(rmse, fold)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+        
+        avg_rmse = float(np.mean(rmses))
+        avg_mae = float(np.mean(maes))
+        avg_r2 = float(np.mean(r2s))
+        
+        trial.set_user_attr('avg_mae', avg_mae)
+        trial.set_user_attr('avg_r2', avg_r2)
+        
+        return avg_rmse
+
+    # CatBoost objective function
+    def objective_catboost(trial):
+        params = {
+            'iterations': trial.suggest_int('iterations', 100, 1000),
+            'depth': trial.suggest_int('depth', 4, 10),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
+            'l2_leaf_reg': trial.suggest_int('l2_leaf_reg', 1, 10),
+            'random_strength': trial.suggest_float('random_strength', 0.1, 10.0),
+            'bagging_temperature': trial.suggest_float('bagging_temperature', 0, 10.0),
+            'grow_policy': trial.suggest_categorical('grow_policy', ['SymmetricTree', 'Depthwise', 'Lossguide']),
+            'random_seed': RANDOM_SEED,
+            'verbose': 0
+        }
+        
+        rmses, maes, r2s = [], [], []
+        inner_cv = TimeSeriesSplit(n_splits=3)
+        
+        for fold, (train_idx, val_idx) in enumerate(inner_cv.split(X_full)):
+            X_train, X_val = X_full[train_idx], X_full[val_idx]
+            y_train, y_val = y_full_1d[train_idx], y_full_1d[val_idx]
+            
+            model = cb.CatBoostRegressor(**params)
+            model.fit(
+                X_train, y_train, 
+                eval_set=[(X_val, y_val)],
+                early_stopping_rounds=50,  # This is still valid for CatBoost
+            )
+            
+            pred = model.predict(X_val)
+            rmse = np.sqrt(mean_squared_error(y_val, pred))
+            mae = mean_absolute_error(y_val, pred)
+            r2 = r2_score(y_val, pred)
+            
+            rmses.append(rmse)
+            maes.append(mae)
+            r2s.append(r2)
+            
+            trial.report(rmse, fold)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+        
+        avg_rmse = float(np.mean(rmses))
+        avg_mae = float(np.mean(maes))
+        avg_r2 = float(np.mean(r2s))
+        
+        trial.set_user_attr('avg_mae', avg_mae)
+        trial.set_user_attr('avg_r2', avg_r2)
+        
+        return avg_rmse
+
+    # Dictionary mapping model names to their objective functions
+    objectives = {
+        "TabNet": objective_tabnet,
+        "XGBoost": objective_xgboost,
+        "LightGBM": objective_lightgbm,
+        "CatBoost": objective_catboost
     }
 
-# Save baseline results
-with open("baseline_results.json", "w") as f:
-    json.dump(baseline_results, f, indent=2)
+    # Number of trials for each model type
+    n_trials = 20
 
-# ―――――――――――――――――――――――――――
-# 2. Advanced Optuna Tuning for Multiple Models
-# ―――――――――――――――――――――――――――
-# Define a more sophisticated Optuna setup
-print("\n=== Running Advanced Optuna Tuning ===")
+    # Run Optuna studies for each model
+    for model_name, objective_fn in objectives.items():
+        print(f"\nTuning {model_name}...")
+        study_name = get_study_name(model_name)
+        studies[model_name] = optuna.create_study(
+            study_name=study_name,
+            direction="minimize",
+            sampler=sampler,
+            pruner=pruner
+        )
+        
+        studies[model_name].optimize(objective_fn, n_trials=n_trials)
+        
+        # Save trial results
+        trial_df = studies[model_name].trials_dataframe(attrs=('number', 'value', 'params', 'user_attrs'))
+        trial_df.to_csv(f"optuna_{model_name.lower()}_trials.csv", index=False)
+        
+        # Save best parameters
+        with open(f"optuna_{model_name.lower()}_best.json", "w") as f:
+            json.dump({
+                "best_rmse": studies[model_name].best_value,
+                "best_params": studies[model_name].best_trial.params,
+                "best_mae": studies[model_name].best_trial.user_attrs.get('avg_mae', None),
+                "best_r2": studies[model_name].best_trial.user_attrs.get('avg_r2', None)
+            }, f, indent=2)
+        
+        print(f"Best {model_name} trial #{studies[model_name].best_trial.number}:")
+        print(f" RMSE = {studies[model_name].best_value:.4f}")
+        print(f" MAE  = {studies[model_name].best_trial.user_attrs.get('avg_mae', 'N/A'):.4f}")
+        print(f" R²   = {studies[model_name].best_trial.user_attrs.get('avg_r2', 'N/A'):.4f}")
+        print("Parameters:", studies[model_name].best_trial.params)
 
-# Create a sampler that focuses on the promising areas
-sampler = TPESampler(seed=RANDOM_SEED)
-# Use MedianPruner for more reliable pruning
-pruner = MedianPruner(n_startup_trials=5, n_warmup_steps=5)
+    # ―――――――――――――――――――――――――――
+    # 3. Advanced Ensemble on Hold-out Set
+    # ―――――――――――――――――――――――――――
+    print("\n=== Training Full Models with Best Parameters ===")
 
-# Separate studies for each model type
-studies = {}
-best_models = {}
+    # Train all models with their best parameters
+    predictions = {}
+    weights = {}
+    model_metrics = {}
 
-# Function to create study name
-def get_study_name(model_name):
-    return f"burglary_prediction_{model_name.lower()}"
+    # Train TabNet model
+    print("Training TabNet...")
+    best_params = studies["TabNet"].best_trial.params
+    tabnet_params = {
+        "n_d": best_params["n_d"],
+        "n_a": best_params.get("n_a", best_params["n_d"]),
+        "n_steps": best_params["n_steps"],
+        "gamma": best_params["gamma"],
+        "cat_idxs": cat_idxs,
+        "cat_dims": cat_dims,
+        "cat_emb_dim": best_params["cat_emb_dim"],
+        "mask_type": "sparsemax",
+        "device_name": device
+    }
 
-# TabNet objective function with expanded search space
-def objective_tabnet(trial):
-    # More extensive TabNet parameter search
-    n_d = trial.suggest_int('n_d', 8, 128)
-    n_a = trial.suggest_int('n_a', 8, 128)
-    n_steps = trial.suggest_int('n_steps', 3, 10)
-    gamma = trial.suggest_float('gamma', 1.0, 3.0)
-    lr = trial.suggest_float('lr', 1e-4, 5e-2, log=True)
-    weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-2, log=True)
-    batch_size = trial.suggest_categorical('batch_size', [256, 512, 1024, 2048])
-    virtual_batch_size = trial.suggest_categorical('virtual_batch_size', [64, 128, 256])
-    momentum = trial.suggest_float('momentum', 0.01, 0.99)
-    
-    # Choose optimizer
-    optimizer_name = trial.suggest_categorical('optimizer', ['Adam', 'AdamW', 'SGD'])
-    if optimizer_name == 'Adam':
-        optimizer_fn = torch.optim.Adam
-        optimizer_params = {'lr': lr, 'weight_decay': weight_decay}
-    elif optimizer_name == 'AdamW':
-        optimizer_fn = torch.optim.AdamW
-        optimizer_params = {'lr': lr, 'weight_decay': weight_decay}
+    # Handle optimizer
+    if best_params["optimizer"] == "Adam":
+        tabnet_params["optimizer_fn"] = torch.optim.Adam
+        tabnet_params["optimizer_params"] = {
+            "lr": best_params["lr"],
+            "weight_decay": best_params["weight_decay"]
+        }
+    elif best_params["optimizer"] == "AdamW":
+        tabnet_params["optimizer_fn"] = torch.optim.AdamW
+        tabnet_params["optimizer_params"] = {
+            "lr": best_params["lr"],
+            "weight_decay": best_params["weight_decay"]
+        }
     else:  # SGD
-        optimizer_fn = torch.optim.SGD
-        optimizer_params = {'lr': lr, 'momentum': momentum, 'weight_decay': weight_decay}
-    
-    # Choose scheduler
-    scheduler_name = trial.suggest_categorical('scheduler', ['CosineAnnealingLR', 'StepLR'])
-    if scheduler_name == 'CosineAnnealingLR':
-        scheduler_fn = torch.optim.lr_scheduler.CosineAnnealingLR
-        scheduler_params = {'T_max': 100}
+        tabnet_params["optimizer_fn"] = torch.optim.SGD
+        tabnet_params["optimizer_params"] = {
+            "lr": best_params["lr"],
+            "momentum": best_params["momentum"],
+            "weight_decay": best_params["weight_decay"]
+        }
+
+    # Handle scheduler
+    if best_params["scheduler"] == "CosineAnnealingLR":
+        tabnet_params["scheduler_fn"] = torch.optim.lr_scheduler.CosineAnnealingLR
+        tabnet_params["scheduler_params"] = {"T_max": 100}
     else:  # StepLR
-        scheduler_fn = torch.optim.lr_scheduler.StepLR
-        step_size = trial.suggest_int('step_size', 5, 20)
-        gamma_lr = trial.suggest_float('gamma_lr', 0.5, 0.95)
-        scheduler_params = {'step_size': step_size, 'gamma': gamma_lr}
+        tabnet_params["scheduler_fn"] = torch.optim.lr_scheduler.StepLR
+        tabnet_params["scheduler_params"] = {
+            "step_size": best_params["step_size"],
+            "gamma": best_params["gamma_lr"]
+        }
 
-    # Feature embedding
-    cat_emb_dim = trial.suggest_categorical('cat_emb_dim', [1, 2, 3, 5])
-    
-    # Early stopping
-    patience = trial.suggest_int('patience', 5, 20)
-    
-    # Cross-validation performance
-    rmses, maes, r2s = [], [], []
-    inner_cv = TimeSeriesSplit(n_splits=3)
-    
-    for fold, (train_idx, val_idx) in enumerate(inner_cv.split(X_full)):
-        X_train, X_val = X_full[train_idx], X_full[val_idx]
-        y_train, y_val = y_full[train_idx], y_full[val_idx]
+    tabnet_model = TabNetRegressor(**tabnet_params)
+    tabnet_model.fit(
+        X_full, y_full,
+        max_epochs=100,
+        patience=best_params["patience"],
+        batch_size=best_params["batch_size"],
+        virtual_batch_size=best_params["virtual_batch_size"]
+    )
+    pred_tabnet = tabnet_model.predict(X_hold).reshape(-1)
+    predictions["TabNet"] = pred_tabnet
+
+    # Train XGBoost model
+    print("Training XGBoost...")
+    best_params = studies["XGBoost"].best_trial.params
+    xgb_params = best_params.copy()
+    xgb_params["random_state"] = RANDOM_SEED
+    xgb_params["tree_method"] = 'gpu_hist' if device == 'cuda' else 'hist'
+    xgb_model = xgb.XGBRegressor(**xgb_params)
+    xgb_model.fit(X_full, y_full_1d, verbose=False)
+    pred_xgb = xgb_model.predict(X_hold)
+    predictions["XGBoost"] = pred_xgb
+
+    # Train LightGBM model
+    print("Training LightGBM...")
+    best_params = studies["LightGBM"].best_trial.params
+    lgb_params = best_params.copy()
+    lgb_params["random_state"] = RANDOM_SEED
+    lgb_model = lgb.LGBMRegressor(**lgb_params)
+    lgb_model.fit(X_full, y_full_1d, verbose=False)
+    pred_lgb = lgb_model.predict(X_hold)
+    predictions["LightGBM"] = pred_lgb
+
+    # Train CatBoost model
+    print("Training CatBoost...")
+    best_params = studies["CatBoost"].best_trial.params
+    cat_params = best_params.copy()
+    cat_params["random_seed"] = RANDOM_SEED
+    cat_params["verbose"] = 0
+    cat_model = cb.CatBoostRegressor(**cat_params)
+    cat_model.fit(X_full, y_full_1d, verbose=False)
+    pred_cat = cat_model.predict(X_hold)
+    predictions["CatBoost"] = pred_cat
+
+    # Train Ridge model as a simple baseline
+    print("Training Ridge...")
+    ridge_model = Ridge(alpha=1.0, random_state=RANDOM_SEED)
+    ridge_model.fit(X_full_scaled, y_full_1d)
+    pred_ridge = ridge_model.predict(X_hold_scaled)
+    predictions["Ridge"] = pred_ridge
+
+    # ―――――――――――――――――――――――――――
+    # 4. Optimize Ensemble Weights with CV
+    # ―――――――――――――――――――――――――――
+    print("\n=== Optimizing Ensemble Weights ===")
+
+    # Function to optimize ensemble weights
+    def objective_ensemble_weights(trial):
+        # Get weights for each model's prediction
+        w_tabnet = trial.suggest_float('w_tabnet', 0.0, 1.0)
+        w_xgb = trial.suggest_float('w_xgb', 0.0, 1.0)
+        w_lgb = trial.suggest_float('w_lgb', 0.0, 1.0)
+        w_cat = trial.suggest_float('w_cat', 0.0, 1.0)
+        w_ridge = trial.suggest_float('w_ridge', 0.0, 1.0)
         
-        model = TabNetRegressor(
-            n_d=n_d, n_a=n_a, n_steps=n_steps, gamma=gamma,
-            cat_idxs=cat_idxs, cat_dims=cat_dims, cat_emb_dim=cat_emb_dim,
-            optimizer_fn=optimizer_fn, optimizer_params=optimizer_params,
-            scheduler_fn=scheduler_fn, scheduler_params=scheduler_params,
-            mask_type='sparsemax', device_name=device
+        # Normalize weights to sum to 1
+        weights_sum = w_tabnet + w_xgb + w_lgb + w_cat + w_ridge
+        if weights_sum > 0:  # Avoid division by zero
+            w_tabnet /= weights_sum
+            w_xgb /= weights_sum
+            w_lgb /= weights_sum
+            w_cat /= weights_sum
+            w_ridge /= weights_sum
+        else:
+            # If all weights are 0, use equal weights
+            w_tabnet = w_xgb = w_lgb = w_cat = w_ridge = 0.2
+        
+        # Compute weighted ensemble prediction
+        pred_ens = (
+            w_tabnet * predictions["TabNet"] +
+            w_xgb * predictions["XGBoost"] +
+            w_lgb * predictions["LightGBM"] +
+            w_cat * predictions["CatBoost"] +
+            w_ridge * predictions["Ridge"]
         )
         
-        model.fit(
-            X_train, y_train,
-            eval_set=[(X_val, y_val)], eval_name=['val'], eval_metric=['rmse'],
-            max_epochs=100, patience=patience,
-            batch_size=batch_size, virtual_batch_size=virtual_batch_size
-        )
+        # Calculate RMSE
+        rmse = np.sqrt(mean_squared_error(y_hold_1d, pred_ens))
         
-        pred = model.predict(X_val)
-        rmse = np.sqrt(mean_squared_error(y_val.reshape(-1), pred.reshape(-1)))
-        mae = mean_absolute_error(y_val.reshape(-1), pred.reshape(-1))
-        r2 = r2_score(y_val.reshape(-1), pred.reshape(-1))
-        
-        rmses.append(rmse)
-        maes.append(mae)
-        r2s.append(r2)
-        
-        # Report intermediate value for pruning
-        trial.report(rmse, fold)
-        if trial.should_prune():
-            raise optuna.TrialPruned()
-    
-    # Log metrics
-    avg_rmse = float(np.mean(rmses))
-    avg_mae = float(np.mean(maes))
-    avg_r2 = float(np.mean(r2s))
-    
-    trial.set_user_attr('avg_mae', avg_mae)
-    trial.set_user_attr('avg_r2', avg_r2)
-    
-    return avg_rmse
+        return rmse
 
-# XGBoost objective function
-def objective_xgboost(trial):
-    params = {
-        'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
-        'max_depth': trial.suggest_int('max_depth', 3, 12),
-        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
-        'subsample': trial.suggest_float('subsample', 0.5, 1.0),
-        'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
-        'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
-        'gamma': trial.suggest_float('gamma', 0, 5),
-        'reg_alpha': trial.suggest_float('reg_alpha', 1e-8, 1.0, log=True),
-        'reg_lambda': trial.suggest_float('reg_lambda', 1e-8, 1.0, log=True),
-        'tree_method': 'gpu_hist' if device == 'cuda' else 'hist',
-        'random_state': RANDOM_SEED
-    }
-    
-    rmses, maes, r2s = [], [], []
-    inner_cv = TimeSeriesSplit(n_splits=3)
-    
-    for fold, (train_idx, val_idx) in enumerate(inner_cv.split(X_full)):
-        X_train, X_val = X_full[train_idx], X_full[val_idx]
-        y_train, y_val = y_full_1d[train_idx], y_full_1d[val_idx]
-        
-        model = xgb.XGBRegressor(**params)
-        model.fit(X_train, y_train, 
-                  eval_set=[(X_val, y_val)],
-                  early_stopping_rounds=50,
-                  verbose=False)
-        
-        pred = model.predict(X_val)
-        rmse = np.sqrt(mean_squared_error(y_val, pred))
-        mae = mean_absolute_error(y_val, pred)
-        r2 = r2_score(y_val, pred)
-        
-        rmses.append(rmse)
-        maes.append(mae)
-        r2s.append(r2)
-        
-        trial.report(rmse, fold)
-        if trial.should_prune():
-            raise optuna.TrialPruned()
-    
-    avg_rmse = float(np.mean(rmses))
-    avg_mae = float(np.mean(maes))
-    avg_r2 = float(np.mean(r2s))
-    
-    trial.set_user_attr('avg_mae', avg_mae)
-    trial.set_user_attr('avg_r2', avg_r2)
-    
-    return avg_rmse
+    # Create study for ensemble weights
+    weight_study = optuna.create_study(direction="minimize")
+    weight_study.optimize(objective_ensemble_weights, n_trials=100)
 
-# LightGBM objective function
-def objective_lightgbm(trial):
-    params = {
-        'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
-        'num_leaves': trial.suggest_int('num_leaves', 15, 127),
-        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
-        'subsample': trial.suggest_float('subsample', 0.5, 1.0),
-        'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
-        'min_child_samples': trial.suggest_int('min_child_samples', 5, 50),
-        'reg_alpha': trial.suggest_float('reg_alpha', 1e-8, 1.0, log=True),
-        'reg_lambda': trial.suggest_float('reg_lambda', 1e-8, 1.0, log=True),
-        'random_state': RANDOM_SEED
-    }
-    
-    rmses, maes, r2s = [], [], []
-    inner_cv = TimeSeriesSplit(n_splits=3)
-    
-    for fold, (train_idx, val_idx) in enumerate(inner_cv.split(X_full)):
-        X_train, X_val = X_full[train_idx], X_full[val_idx]
-        y_train, y_val = y_full_1d[train_idx], y_full_1d[val_idx]
-        
-        model = lgb.LGBMRegressor(**params)
-        model.fit(X_train, y_train, 
-                  eval_set=[(X_val, y_val)],
-                  eval_metric='rmse',
-                  early_stopping_rounds=50,
-                  verbose=False)
-        
-        pred = model.predict(X_val)
-        rmse = np.sqrt(mean_squared_error(y_val, pred))
-        mae = mean_absolute_error(y_val, pred)
-        r2 = r2_score(y_val, pred)
-        
-        rmses.append(rmse)
-        maes.append(mae)
-        r2s.append(r2)
-        
-        trial.report(rmse, fold)
-        if trial.should_prune():
-            raise optuna.TrialPruned()
-    
-    avg_rmse = float(np.mean(rmses))
-    avg_mae = float(np.mean(maes))
-    avg_r2 = float(np.mean(r2s))
-    
-    trial.set_user_attr('avg_mae', avg_mae)
-    trial.set_user_attr('avg_r2', avg_r2)
-    
-    return avg_rmse
+    # Get best weights
+    best_weights = weight_study.best_trial.params
+    w_sum = sum(best_weights.values())
+    normalized_weights = {k: v/w_sum for k, v in best_weights.items()}
 
-# CatBoost objective function
-def objective_catboost(trial):
-    params = {
-        'iterations': trial.suggest_int('iterations', 100, 1000),
-        'depth': trial.suggest_int('depth', 4, 10),
-        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
-        'l2_leaf_reg': trial.suggest_int('l2_leaf_reg', 1, 10),
-        'random_strength': trial.suggest_float('random_strength', 0.1, 10.0),
-        'bagging_temperature': trial.suggest_float('bagging_temperature', 0, 10.0),
-        'grow_policy': trial.suggest_categorical('grow_policy', ['SymmetricTree', 'Depthwise', 'Lossguide']),
-        'random_seed': RANDOM_SEED,
-        'verbose': 0
-    }
-    
-    rmses, maes, r2s = [], [], []
-    inner_cv = TimeSeriesSplit(n_splits=3)
-    
-    for fold, (train_idx, val_idx) in enumerate(inner_cv.split(X_full)):
-        X_train, X_val = X_full[train_idx], X_full[val_idx]
-        y_train, y_val = y_full_1d[train_idx], y_full_1d[val_idx]
-        
-        model = cb.CatBoostRegressor(**params)
-        model.fit(X_train, y_train, 
-                  eval_set=[(X_val, y_val)],
-                  early_stopping_rounds=50,
-                  verbose=False)
-        
-        pred = model.predict(X_val)
-        rmse = np.sqrt(mean_squared_error(y_val, pred))
-        mae = mean_absolute_error(y_val, pred)
-        r2 = r2_score(y_val, pred)
-        
-        rmses.append(rmse)
-        maes.append(mae)
-        r2s.append(r2)
-        
-        trial.report(rmse, fold)
-        if trial.should_prune():
-            raise optuna.TrialPruned()
-    
-    avg_rmse = float(np.mean(rmses))
-    avg_mae = float(np.mean(maes))
-    avg_r2 = float(np.mean(r2s))
-    
-    trial.set_user_attr('avg_mae', avg_mae)
-    trial.set_user_attr('avg_r2', avg_r2)
-    
-    return avg_rmse
+    print("Best ensemble weights:")
+    for model_name, weight in normalized_weights.items():
+        print(f"  {model_name[2:]}: {weight:.4f}")
 
-# Dictionary mapping model names to their objective functions
-objectives = {
-    "TabNet": objective_tabnet,
-    "XGBoost": objective_xgboost,
-    "LightGBM": objective_lightgbm,
-    "CatBoost": objective_catboost
-}
-
-# Number of trials for each model type
-n_trials = 20
-
-# Run Optuna studies for each model
-for model_name, objective_fn in objectives.items():
-    print(f"\nTuning {model_name}...")
-    study_name = get_study_name(model_name)
-    studies[model_name] = optuna.create_study(
-        study_name=study_name,
-        direction="minimize",
-        sampler=sampler,
-        pruner=pruner
+    # Calculate final ensemble prediction with optimal weights
+    final_ensemble_pred = (
+        normalized_weights['w_tabnet'] * predictions["TabNet"] +
+        normalized_weights['w_xgb'] * predictions["XGBoost"] +
+        normalized_weights['w_lgb'] * predictions["LightGBM"] +
+        normalized_weights['w_cat'] * predictions["CatBoost"] +
+        normalized_weights['w_ridge'] * predictions["Ridge"]
     )
-    
-    studies[model_name].optimize(objective_fn, n_trials=n_trials)
-    
-    # Save trial results
-    trial_df = studies[model_name].trials_dataframe(attrs=('number', 'value', 'params', 'user_attrs'))
-    trial_df.to_csv(f"optuna_{model_name.lower()}_trials.csv", index=False)
-    
-    # Save best parameters
-    with open(f"optuna_{model_name.lower()}_best.json", "w") as f:
-        json.dump({
-            "best_rmse": studies[model_name].best_value,
-            "best_params": studies[model_name].best_trial.params,
-            "best_mae": studies[model_name].best_trial.user_attrs.get('avg_mae', None),
-            "best_r2": studies[model_name].best_trial.user_attrs.get('avg_r2', None)
-        }, f, indent=2)
-    
-    print(f"Best {model_name} trial #{studies[model_name].best_trial.number}:")
-    print(f" RMSE = {studies[model_name].best_value:.4f}")
-    print(f" MAE  = {studies[model_name].best_trial.user_attrs.get('avg_mae', 'N/A'):.4f}")
-    print(f" R²   = {studies[model_name].best_trial.user_attrs.get('avg_r2', 'N/A'):.4f}")
-    print("Parameters:", studies[model_name].best_trial.params)
 
-# ―――――――――――――――――――――――――――
-# 3. Advanced Ensemble on Hold-out Set
-# ―――――――――――――――――――――――――――
-print("\n=== Training Full Models with Best Parameters ===")
+    # ―――――――――――――――――――――――――――
+    # 5. Evaluate and Compare All Models
+    # ―――――――――――――――――――――――――――
+    print("\n=== Final Evaluation on Hold-out Set ===")
 
-# Train all models with their best parameters
-predictions = {}
-weights = {}
-model_metrics = {}
+    # Calculate metrics for all models including ensemble
+    final_metrics = {}
 
-# Train TabNet model
-print("Training TabNet...")
-best_params = studies["TabNet"].best_trial.params
-tabnet_params = {
-    "n_d": best_params["n_d"],
-    "n_a": best_params.get("n_a", best_params["n_d"]),
-    "n_steps": best_params["n_steps"],
-    "gamma": best_params["gamma"],
-    "cat_idxs": cat_idxs,
-    "cat_dims": cat_dims,
-    "cat_emb_dim": best_params["cat_emb_dim"],
-    "mask_type": "sparsemax",
-    "device_name": device
-}
+    for name, pred in predictions.items():
+        rmse = np.sqrt(mean_squared_error(y_hold_1d, pred))
+        mae = mean_absolute_error(y_hold_1d, pred)
+        r2 = r2_score(y_hold_1d, pred)
+        
+        final_metrics[name] = {
+            "rmse": float(rmse),
+            "mae": float(mae),
+            "r2": float(r2)
+        }
+        
+        print(f"{name}: RMSE={rmse:.3f}, MAE={mae:.3f}, R²={r2:.3f}")
 
-# Handle optimizer
-if best_params["optimizer"] == "Adam":
-    tabnet_params["optimizer_fn"] = torch.optim.Adam
-    tabnet_params["optimizer_params"] = {
-        "lr": best_params["lr"],
-        "weight_decay": best_params["weight_decay"]
-    }
-elif best_params["optimizer"] == "AdamW":
-    tabnet_params["optimizer_fn"] = torch.optim.AdamW
-    tabnet_params["optimizer_params"] = {
-        "lr": best_params["lr"],
-        "weight_decay": best_params["weight_decay"]
-    }
-else:  # SGD
-    tabnet_params["optimizer_fn"] = torch.optim.SGD
-    tabnet_params["optimizer_params"] = {
-        "lr": best_params["lr"],
-        "momentum": best_params["momentum"],
-        "weight_decay": best_params["weight_decay"]
+    # Calculate metrics for weighted ensemble
+    rmse_ens = np.sqrt(mean_squared_error(y_hold_1d, final_ensemble_pred))
+    mae_ens = mean_absolute_error(y_hold_1d, final_ensemble_pred)
+    r2_ens = r2_score(y_hold_1d, final_ensemble_pred)
+
+    final_metrics["Weighted_Ensemble"] = {
+        "rmse": float(rmse_ens),
+        "mae": float(mae_ens),
+        "r2": float(r2_ens),
+        "weights": normalized_weights
     }
 
-# Handle scheduler
-if best_params["scheduler"] == "CosineAnnealingLR":
-    tabnet_params["scheduler_fn"] = torch.optim.lr_scheduler.CosineAnnealingLR
-    tabnet_params["scheduler_params"] = {"T_max": 100}
-else:  # StepLR
-    tabnet_params["scheduler_fn"] = torch.optim.lr_scheduler.StepLR
-    tabnet_params["scheduler_params"] = {
-        "step_size": best_params["step_size"],
-        "gamma": best_params["gamma_lr"]
-    }
+    print(f"Weighted Ensemble: RMSE={rmse_ens:.3f}, MAE={mae_ens:.3f}, R²={r2_ens:.3f}")
 
-tabnet_model = TabNetRegressor(**tabnet_params)
-tabnet_model.fit(
-    X_full, y_full,
-    max_epochs=100,
-    patience=best_params["patience"],
-    batch_size=best_params["batch_size"],
-    virtual_batch_size=best_params["virtual_batch_size"]
-)
-pred_tabnet = tabnet_model.predict(X_hold).reshape(-1)
-predictions["TabNet"] = pred_tabnet
+    # Save final metrics
+    with open("final_model_metrics.json", "w") as f:
+        json.dump(final_metrics, f, indent=2)
 
-# Train XGBoost model
-print("Training XGBoost...")
-best_params = studies["XGBoost"].best_trial.params
-xgb_params = best_params.copy()
-xgb_params["random_state"] = RANDOM_SEED
-xgb_params["tree_method"] = 'gpu_hist' if device == 'cuda' else 'hist'
-xgb_model = xgb.XGBRegressor(**xgb_params)
-xgb_model.fit(X_full, y_full_1d, verbose=False)
-pred_xgb = xgb_model.predict(X_hold)
-predictions["XGBoost"] = pred_xgb
+    # ―――――――――――――――――――――――――――
+    # 6. Visualize Results and Feature Importance
+    # ―――――――――――――――――――――――――――
+    print("\n=== Generating Visualizations ===")
 
-# Train LightGBM model
-print("Training LightGBM...")
-best_params = studies["LightGBM"].best_trial.params
-lgb_params = best_params.copy()
-lgb_params["random_state"] = RANDOM_SEED
-lgb_model = lgb.LGBMRegressor(**lgb_params)
-lgb_model.fit(X_full, y_full_1d, verbose=False)
-pred_lgb = lgb_model.predict(X_hold)
-predictions["LightGBM"] = pred_lgb
+    # Create directory for visualizations
+    import os
+    if not os.path.exists("visualizations"):
+        os.makedirs("visualizations")
 
-# Train CatBoost model
-print("Training CatBoost...")
-best_params = studies["CatBoost"].best_trial.params
-cat_params = best_params.copy()
-cat_params["random_seed"] = RANDOM_SEED
-cat_params["verbose"] = 0
-cat_model = cb.CatBoostRegressor(**cat_params)
-cat_model.fit(X_full, y_full_1d, verbose=False)
-pred_cat = cat_model.predict(X_hold)
-predictions["CatBoost"] = pred_cat
+    # 1. Model Performance Comparison
+    plt.figure(figsize=(12, 6))
+    models = list(final_metrics.keys())
+    rmse_values = [final_metrics[m]["rmse"] for m in models]
 
-# Train Ridge model as a simple baseline
-print("Training Ridge...")
-ridge_model = Ridge(alpha=1.0, random_state=RANDOM_SEED)
-ridge_model.fit(X_full_scaled, y_full_1d)
-pred_ridge = ridge_model.predict(X_hold_scaled)
-predictions["Ridge"] = pred_ridge
+    # Sort by RMSE (ascending)
+    sorted_indices = np.argsort(rmse_values)
+    models = [models[i] for i in sorted_indices]
+    rmse_values = [rmse_values[i] for i in sorted_indices]
 
-# ―――――――――――――――――――――――――――
-# 4. Optimize Ensemble Weights with CV
-# ―――――――――――――――――――――――――――
-print("\n=== Optimizing Ensemble Weights ===")
+    plt.barh(models, rmse_values, color='skyblue')
+    plt.xlabel('RMSE (lower is better)')
+    plt.title('Model Performance Comparison (Hold-out Set)')
+    plt.grid(axis='x', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.savefig("visualizations/model_comparison.png")
 
-# Function to optimize ensemble weights
-def objective_ensemble_weights(trial):
-    # Get weights for each model's prediction
-    w_tabnet = trial.suggest_float('w_tabnet', 0.0, 1.0)
-    w_xgb = trial.suggest_float('w_xgb', 0.0, 1.0)
-    w_lgb = trial.suggest_float('w_lgb', 0.0, 1.0)
-    w_cat = trial.suggest_float('w_cat', 0.0, 1.0)
-    w_ridge = trial.suggest_float('w_ridge', 0.0, 1.0)
-    
-    # Normalize weights to sum to 1
-    weights_sum = w_tabnet + w_xgb + w_lgb + w_cat + w_ridge
-    if weights_sum > 0:  # Avoid division by zero
-        w_tabnet /= weights_sum
-        w_xgb /= weights_sum
-        w_lgb /= weights_sum
-        w_cat /= weights_sum
-        w_ridge /= weights_sum
-    else:
-        # If all weights are 0, use equal weights
-        w_tabnet = w_xgb = w_lgb = w_cat = w_ridge = 0.2
-    
-    # Compute weighted ensemble prediction
-    pred_ens = (
-        w_tabnet * predictions["TabNet"] +
-        w_xgb * predictions["XGBoost"] +
-        w_lgb * predictions["LightGBM"] +
-        w_cat * predictions["CatBoost"] +
-        w_ridge * predictions["Ridge"]
-    )
-    
-    # Calculate RMSE
-    rmse = np.sqrt(mean_squared_error(y_hold_1d, pred_ens))
-    
-    return rmse
+    # 2. Feature Importance from XGBoost
+    feature_names = X.columns
+    plt.figure(figsize=(14, 10))
 
-# Create study for ensemble weights
-weight_study = optuna.create_study(direction="minimize")
-weight_study.optimize(objective_ensemble_weights, n_trials=100)
+    # Get feature importance from XGBoost model
+    importance = xgb_model.feature_importances_
+    indices = np.argsort(importance)[::-1]
 
-# Get best weights
-best_weights = weight_study.best_trial.params
-w_sum = sum(best_weights.values())
-normalized_weights = {k: v/w_sum for k, v in best_weights.items()}
+    plt.bar(range(len(importance)), importance[indices], color='seagreen')
+    plt.xticks(range(len(importance)), [feature_names[i] for i in indices], rotation=90)
+    plt.xlabel('Features')
+    plt.ylabel('Importance')
+    plt.title('XGBoost Feature Importance')
+    plt.tight_layout()
+    plt.savefig("visualizations/feature_importance.png")
 
-print("Best ensemble weights:")
-for model_name, weight in normalized_weights.items():
-    print(f"  {model_name[2:]}: {weight:.4f}")
+    # 3. Actual vs Predicted plot
+    plt.figure(figsize=(10, 8))
+    plt.scatter(y_hold_1d, final_ensemble_pred, alpha=0.5)
+    plt.plot([min(y_hold_1d), max(y_hold_1d)], [min(y_hold_1d), max(y_hold_1d)], 'r--')
+    plt.xlabel('Actual Burglary Count')
+    plt.ylabel('Predicted Burglary Count')
+    plt.title('Actual vs Predicted (Weighted Ensemble)')
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.savefig("visualizations/actual_vs_predicted.png")
 
-# Calculate final ensemble prediction with optimal weights
-final_ensemble_pred = (
-    normalized_weights['w_tabnet'] * predictions["TabNet"] +
-    normalized_weights['w_xgb'] * predictions["XGBoost"] +
-    normalized_weights['w_lgb'] * predictions["LightGBM"] +
-    normalized_weights['w_cat'] * predictions["CatBoost"] +
-    normalized_weights['w_ridge'] * predictions["Ridge"]
-)
+    # 4. Error Distribution
+    plt.figure(figsize=(10, 6))
+    errors = y_hold_1d - final_ensemble_pred
+    plt.hist(errors, bins=30, alpha=0.7, color='purple')
+    plt.axvline(x=0, color='r', linestyle='--')
+    plt.xlabel('Prediction Error')
+    plt.ylabel('Frequency')
+    plt.title('Error Distribution (Weighted Ensemble)')
+    plt.grid(True, linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.savefig("visualizations/error_distribution.png")
 
-# ―――――――――――――――――――――――――――
-# 5. Evaluate and Compare All Models
-# ―――――――――――――――――――――――――――
-print("\n=== Final Evaluation on Hold-out Set ===")
+    # Save a sample of predictions for manual inspection
+    sample_size = min(50, len(y_hold_1d))
+    sample_indices = np.random.choice(len(y_hold_1d), sample_size, replace=False)
 
-# Calculate metrics for all models including ensemble
-final_metrics = {}
+    sample_results = pd.DataFrame({
+        'Actual': y_hold_1d[sample_indices],
+        'Ensemble_Predicted': final_ensemble_pred[sample_indices],
+        'TabNet_Predicted': predictions["TabNet"][sample_indices],
+        'XGBoost_Predicted': predictions["XGBoost"][sample_indices],
+        'LightGBM_Predicted': predictions["LightGBM"][sample_indices],
+        'CatBoost_Predicted': predictions["CatBoost"][sample_indices],
+        'Ridge_Predicted': predictions["Ridge"][sample_indices],
+        'Error': errors[sample_indices]
+    })
 
-for name, pred in predictions.items():
-    rmse = np.sqrt(mean_squared_error(y_hold_1d, pred))
-    mae = mean_absolute_error(y_hold_1d, pred)
-    r2 = r2_score(y_hold_1d, pred)
-    
-    final_metrics[name] = {
-        "rmse": float(rmse),
-        "mae": float(mae),
-        "r2": float(r2)
-    }
-    
-    print(f"{name}: RMSE={rmse:.3f}, MAE={mae:.3f}, R²={r2:.3f}")
+    sample_results.to_csv("sample_predictions.csv", index=False)
 
-# Calculate metrics for weighted ensemble
-rmse_ens = np.sqrt(mean_squared_error(y_hold_1d, final_ensemble_pred))
-mae_ens = mean_absolute_error(y_hold_1d, final_ensemble_pred)
-r2_ens = r2_score(y_hold_1d, final_ensemble_pred)
+    print("✅ Saved all model metrics, visualizations, and sample predictions")
 
-final_metrics["Weighted_Ensemble"] = {
-    "rmse": float(rmse_ens),
-    "mae": float(mae_ens),
-    "r2": float(r2_ens),
-    "weights": normalized_weights
-}
-
-print(f"Weighted Ensemble: RMSE={rmse_ens:.3f}, MAE={mae_ens:.3f}, R²={r2_ens:.3f}")
-
-# Save final metrics
-with open("final_model_metrics.json", "w") as f:
-    json.dump(final_metrics, f, indent=2)
-
-# ―――――――――――――――――――――――――――
-# 6. Visualize Results and Feature Importance
-# ―――――――――――――――――――――――――――
-print("\n=== Generating Visualizations ===")
-
-# Create directory for visualizations
-import os
-if not os.path.exists("visualizations"):
-    os.makedirs("visualizations")
-
-# 1. Model Performance Comparison
-plt.figure(figsize=(12, 6))
-models = list(final_metrics.keys())
-rmse_values = [final_metrics[m]["rmse"] for m in models]
-
-# Sort by RMSE (ascending)
-sorted_indices = np.argsort(rmse_values)
-models = [models[i] for i in sorted_indices]
-rmse_values = [rmse_values[i] for i in sorted_indices]
-
-plt.barh(models, rmse_values, color='skyblue')
-plt.xlabel('RMSE (lower is better)')
-plt.title('Model Performance Comparison (Hold-out Set)')
-plt.grid(axis='x', linestyle='--', alpha=0.7)
-plt.tight_layout()
-plt.savefig("visualizations/model_comparison.png")
-
-# 2. Feature Importance from XGBoost
-feature_names = X.columns
-plt.figure(figsize=(14, 10))
-
-# Get feature importance from XGBoost model
-importance = xgb_model.feature_importances_
-indices = np.argsort(importance)[::-1]
-
-plt.bar(range(len(importance)), importance[indices], color='seagreen')
-plt.xticks(range(len(importance)), [feature_names[i] for i in indices], rotation=90)
-plt.xlabel('Features')
-plt.ylabel('Importance')
-plt.title('XGBoost Feature Importance')
-plt.tight_layout()
-plt.savefig("visualizations/feature_importance.png")
-
-# 3. Actual vs Predicted plot
-plt.figure(figsize=(10, 8))
-plt.scatter(y_hold_1d, final_ensemble_pred, alpha=0.5)
-plt.plot([min(y_hold_1d), max(y_hold_1d)], [min(y_hold_1d), max(y_hold_1d)], 'r--')
-plt.xlabel('Actual Burglary Count')
-plt.ylabel('Predicted Burglary Count')
-plt.title('Actual vs Predicted (Weighted Ensemble)')
-plt.grid(True, linestyle='--', alpha=0.7)
-plt.tight_layout()
-plt.savefig("visualizations/actual_vs_predicted.png")
-
-# 4. Error Distribution
-plt.figure(figsize=(10, 6))
-errors = y_hold_1d - final_ensemble_pred
-plt.hist(errors, bins=30, alpha=0.7, color='purple')
-plt.axvline(x=0, color='r', linestyle='--')
-plt.xlabel('Prediction Error')
-plt.ylabel('Frequency')
-plt.title('Error Distribution (Weighted Ensemble)')
-plt.grid(True, linestyle='--', alpha=0.7)
-plt.tight_layout()
-plt.savefig("visualizations/error_distribution.png")
-
-# Save a sample of predictions for manual inspection
-sample_size = min(50, len(y_hold_1d))
-sample_indices = np.random.choice(len(y_hold_1d), sample_size, replace=False)
-
-sample_results = pd.DataFrame({
-    'Actual': y_hold_1d[sample_indices],
-    'Ensemble_Predicted': final_ensemble_pred[sample_indices],
-    'TabNet_Predicted': predictions["TabNet"][sample_indices],
-    'XGBoost_Predicted': predictions["XGBoost"][sample_indices],
-    'LightGBM_Predicted': predictions["LightGBM"][sample_indices],
-    'CatBoost_Predicted': predictions["CatBoost"][sample_indices],
-    'Ridge_Predicted': predictions["Ridge"][sample_indices],
-    'Error': errors[sample_indices]
-})
-
-sample_results.to_csv("sample_predictions.csv", index=False)
-
-print("✅ Saved all model metrics, visualizations, and sample predictions")
+if __name__ == "__main__":
+    # this makes spawn-based DataLoader happy on Windows
+    freeze_support()
+    main()
