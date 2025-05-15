@@ -5,7 +5,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 # Load and preprocess data
-df = pd.read_csv('processed/final_dataset.csv')
+df = pd.read_csv('processed/final_dataset_residential_burglary.csv')
 df['date'] = pd.to_datetime(df[['year','month']].assign(day=1))
 
 # Load ward lookup for names
@@ -32,7 +32,7 @@ x_attr = st.sidebar.selectbox('X Axis', attributes, index=attributes.index('crim
 y_attr = st.sidebar.selectbox('Y Axis', attributes, index=attributes.index('house_price'))
 
 
-st.title('London Ward Crime & Housing Insights')
+st.title('London Ward Residential Burglary Analysis')
 
 
 total_burg = df['burglary_count'].sum()
@@ -47,14 +47,14 @@ col4.metric('Avg Crime Score', f'{avg_crime:.2f}')
 
 # Time Series: Avg Monthly Burglary
 ts = df.groupby('date')['burglary_count'].mean().reset_index()
-fig_ts = px.line(ts, x='date', y='burglary_count', title='Avg Monthly Burglary Count')
+fig_ts = px.line(ts, x='date', y='burglary_count', title='Avg Monthly Residential Burglary Count')
 st.plotly_chart(fig_ts, use_container_width=True)
 
 
 top10 = df.groupby(['ward_code','ward_name'])['burglary_count']\
            .mean().nlargest(10).reset_index()
 fig_top = px.bar(top10, x='ward_name', y='burglary_count',
-                 title='Top 10 Wards by Avg Burglaries',
+                 title='Top 10 Wards by Avg Residential Burglaries',
                  labels={'ward_name':'Ward','burglary_count':'Avg Burglaries'})
 st.plotly_chart(fig_top, use_container_width=True)
 
@@ -70,15 +70,76 @@ if len(df) > 1:
         fig_sc.add_trace(go.Scatter(x=x_range, y=y_range, mode='lines', name='Trend Line'))
 st.plotly_chart(fig_sc, use_container_width=True)
 
-# Parallel Coordinates: IMD Domains vs Avg Burglary per Ward
-parallel_df = df.groupby('ward_name')[['crime_score','education_score','employment_score',
-                                       'environment_score','health_score','housing_score',
-                                       'income_score','burglary_count']].mean().reset_index()
-fig_par = px.parallel_coordinates(parallel_df,
-                                  dimensions=['crime_score','education_score','employment_score',
-                                              'environment_score','health_score','housing_score',
-                                              'income_score','burglary_count'],
-                                  color='burglary_count',
-                                  color_continuous_scale='OrRd',
-                                  title='IMD Domain Scores vs Avg Burglary per Ward')
-st.plotly_chart(fig_par, use_container_width=True)
+# NEW SECTION: Correlation Heatmap for Factors Related to Burglary
+st.subheader("Correlation Analysis: Factors Related to Residential Burglary")
+
+# Create correlation matrix
+corr_cols = ['burglary_count', 'house_price', 'crime_score', 'education_score', 
+             'employment_score', 'environment_score', 'health_score', 
+             'housing_score', 'income_score']
+             
+corr_df = df.groupby('ward_name')[corr_cols].mean().reset_index()
+corr_matrix = corr_df[corr_cols].corr().round(2)
+
+# Create heatmap
+fig_heatmap = px.imshow(
+    corr_matrix,
+    x=corr_cols,
+    y=corr_cols,
+    color_continuous_scale='RdBu_r',
+    zmin=-1, zmax=1,
+    title="Correlation of Residential Burglary with Socioeconomic Factors"
+)
+
+fig_heatmap.update_layout(
+    xaxis_title="", 
+    yaxis_title="",
+    xaxis={'side': 'bottom'}
+)
+
+# Add text annotations
+for i in range(len(corr_matrix.columns)):
+    for j in range(len(corr_matrix.index)):
+        fig_heatmap.add_annotation(
+            x=i, y=j,
+            text=str(corr_matrix.iloc[j, i]),
+            showarrow=False,
+            font=dict(color="white" if abs(corr_matrix.iloc[j, i]) > 0.5 else "black")
+        )
+
+st.plotly_chart(fig_heatmap, use_container_width=True)
+
+# NEW SECTION: Seasonal Analysis of Burglaries
+st.subheader("Seasonal Analysis of Residential Burglaries")
+
+# Extract month and calculate average burglaries by month
+df['month_name'] = df['date'].dt.strftime('%B')
+monthly_burglaries = df.groupby('month_name')['burglary_count'].mean().reset_index()
+
+# Define month order for proper sorting
+month_order = ['January', 'February', 'March', 'April', 'May', 'June', 
+               'July', 'August', 'September', 'October', 'November', 'December']
+monthly_burglaries['month_num'] = monthly_burglaries['month_name'].apply(lambda x: month_order.index(x))
+monthly_burglaries = monthly_burglaries.sort_values('month_num')
+
+# Create bar chart
+fig_seasonal = px.bar(
+    monthly_burglaries, 
+    x='month_name', 
+    y='burglary_count',
+    category_orders={"month_name": month_order},
+    title="Average Residential Burglaries by Month",
+    labels={'month_name': 'Month', 'burglary_count': 'Average Burglary Count'}
+)
+
+# Add a horizontal line for the overall average
+overall_avg = monthly_burglaries['burglary_count'].mean()
+fig_seasonal.add_hline(
+    y=overall_avg,
+    line_dash="dash",
+    line_color="red",
+    annotation_text=f"Overall Average: {overall_avg:.2f}",
+    annotation_position="top right"
+)
+
+st.plotly_chart(fig_seasonal, use_container_width=True)
