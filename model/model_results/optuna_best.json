@@ -1,0 +1,18 @@
+{
+  "best_rmse": 0.29771313955577844,
+  "best_params": {
+    "n_d": 74,
+    "n_a": 25,
+    "n_steps": 9,
+    "gamma": 2.558765939375417,
+    "lr": 0.024450458797119174,
+    "weight_decay": 0.00020535812842468099,
+    "batch_size": 1024,
+    "virtual_batch_size": 512,
+    "momentum": 0.14563075508142637,
+    "mask_type": "entmax",
+    "cat_emb_dim": 2
+  },
+  "best_mae": 0.19474190970261893,
+  "best_r2": 0.9946330587069193
+}

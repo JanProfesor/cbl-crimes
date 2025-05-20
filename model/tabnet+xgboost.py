@@ -59,7 +59,7 @@ for fold,(tr,val) in enumerate(base_cv.split(X_full),1):
     Xt, Xv = X_full[tr], X_full[val]
     yt, yv = y_full[tr], y_full[val]
     m = TabNetRegressor(
-        n_d=16,n_a=16,n_steps=5,gamma=1.5,
+        n_d=32,n_a=32,n_steps=5,gamma=1.5,
         cat_idxs=cat_idxs,cat_dims=cat_dims,cat_emb_dim=1,
         optimizer_fn=torch.optim.Adam,optimizer_params={'lr':1e-2},
         scheduler_fn=torch.optim.lr_scheduler.StepLR,
@@ -70,7 +70,7 @@ for fold,(tr,val) in enumerate(base_cv.split(X_full),1):
         Xt, yt,
         eval_set=[(Xv,yv)],eval_name=['val'],eval_metric=['rmse'],
         max_epochs=30,patience=5,
-        batch_size=512,virtual_batch_size=128
+        batch_size=4096,virtual_batch_size=4096
     )
     p = m.predict(Xv)
     print(f" Fold {fold}: RMSE={np.sqrt(mean_squared_error(yv,p)):.3f}, "
@@ -84,12 +84,12 @@ study = optuna.create_study(direction="minimize", pruner=pruner)
 
 def objective(trial):
     # search space
-    n_d   = trial.suggest_int('n_d',8,64)
+    n_d   = trial.suggest_int('n_d',16,64)
     n_st  = trial.suggest_int('n_steps',3,10)
     gamma = trial.suggest_float('gamma',1.0,2.5)
     lr    = trial.suggest_float('lr',1e-4,1e-1,log=True)
     wd    = trial.suggest_float('weight_decay',1e-6,1e-2,log=True)
-    bs    = trial.suggest_categorical('batch_size',[256,512,1024])
+    bs    = trial.suggest_categorical('batch_size',[1024,2048,4096])
 
     rmses, maes, r2s = [], [], []
     inner_cv = TimeSeriesSplit(n_splits=3)
@@ -108,8 +108,8 @@ def objective(trial):
         m.fit(
             Xt, yt,
             eval_set=[(Xv,yv)],eval_name=['val'],eval_metric=['rmse'],
-            max_epochs=20,patience=3,
-            batch_size=bs,virtual_batch_size=128
+            max_epochs=30,patience=5,
+            batch_size=bs,virtual_batch_size=1024
         )
         p = m.predict(Xv)
         rmse = np.sqrt(mean_squared_error(yv,p))
@@ -160,8 +160,8 @@ tabnet = TabNetRegressor(
 )
 tabnet.fit(
     X_full, y_full,
-    max_epochs=20,patience=3,
-    batch_size=bp['batch_size'],virtual_batch_size=128
+    max_epochs=30,patience=5,
+    batch_size=bp['batch_size'],virtual_batch_size=1024
 )
 pred_tab = tabnet.predict(X_hold).reshape(-1)
 
