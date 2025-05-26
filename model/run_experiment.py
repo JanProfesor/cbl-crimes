@@ -11,7 +11,7 @@ from tabnet_model import TabNetModel
 from xgboost_model import XGBoostModel
 from ensemble_blender import EnsembleBlender
 from utils import create_run_folder
-
+from hyperparameter_tuning import tune_tabnet, tune_xgboost
 import torch
 
 def main():
@@ -26,14 +26,18 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("Using device:", device)
 
+    # --- Hyperparameter Tuning ---
+    print("🔍 Tuning TabNet hyperparameters...")
+    best_tabnet_params = tune_tabnet(X_full, y_full, cat_idxs, cat_dims, device)
+    print("Best TabNet params:", best_tabnet_params)
+
+    print("🔍 Tuning XGBoost hyperparameters...")
+    best_xgb_params = tune_xgboost(X_full, y_full, device)
+    print("Best XGBoost params:", best_xgb_params)
+
     # --- TabNet ---
-    tabnet_params = {
-        'n_d': 32, 'n_a': 32, 'n_steps': 5, 'gamma': 1.5,
-        'lr': 1e-2, 'batch_size': 4096, 'virtual_batch_size': 4096,
-        'mask_type': 'sparsemax', 'cat_emb_dim': 1
-    }
     tabnet = TabNetModel(cat_idxs, cat_dims, device)
-    tabnet.train(X_full, y_full, tabnet_params)
+    tabnet.train(X_full, y_full, best_tabnet_params)
     pred_tab = tabnet.predict(X_hold)
 
     # TabNet feature importances
@@ -54,7 +58,7 @@ def main():
 
     # --- XGBoost ---
     xgb = XGBoostModel(device)
-    xgb.train(X_full, y_full)
+    xgb.train(X_full, y_full, best_xgb_params)
     pred_xgb = xgb.predict(X_hold)
 
     # XGBoost feature importances
