@@ -78,3 +78,8 @@ importances = model.feature_importances()
 sorted(importances.items(), key=lambda x: x[1], reverse=True)
 for feature, score in sorted(importances.items(), key=lambda x: x[1], reverse=True):
     print(f"{feature}: {score:.2f}")
+
+# save and load
+model.final_model.save_model("XGBoost_model.json")
+loaded_model=xgb.Booster()
+loaded_model.load_model("XGBoost_model.json")
