@@ -15,6 +15,8 @@ from optuna.pruners import MedianPruner
 import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
+import os
+from pathlib import Path
 
 # Set random seeds for reproducibility
 np.random.seed(42)
@@ -23,6 +25,11 @@ torch.manual_seed(42)
 # ―――――――――――――――――――――――――――
 # 0. Load & preprocess
 # ―――――――――――――――――――――――――――
+
++SCRIPT_DIR = Path(__file__).resolve().parent     # …/project_root/model
++OUT_DIR    = SCRIPT_DIR / "model_results"
++os.makedirs(OUT_DIR, exist_ok=True)
+
 df = pd.read_csv("processed/final_dataset_residential_burglary.csv")
 df['date'] = pd.to_datetime(df[['year','month']].assign(day=1))
 df = df.sort_values(['ward_code','date'])
@@ -283,6 +290,85 @@ sns.barplot(x='Importance', y='Feature', data=xgb_importance_df.head(15))
 plt.title('XGBoost Feature Importances')
 plt.tight_layout()
 plt.savefig('xgb_feature_importances.png')
+
+
+# ─── Hold-out DataFrame for Analysis ─────────────────────────────────────────────
+n_train = X_full.shape[0]
+df_hold = df.iloc[n_train:].copy().reset_index(drop=True)
+df_hold['pred_xgb'] = pred_xgb
+df_hold['error']   = df_hold['pred_xgb'] - y_hold
+
+# ─── 1) RMSE by Ward (top & bottom 10) ───────────────────────────────────────────
+ward_rmse = (
+    df_hold
+    .groupby('ward_code')['error']
+    .apply(lambda e: np.sqrt(np.mean(e**2)))
+    .sort_values()
+)
+
+best10  = ward_rmse.head(10)
+worst10 = ward_rmse.tail(10)
+combined = pd.concat([best10, worst10])
+
+plt.figure(figsize=(10, 6))
+sns.barplot(
+    x=combined.values,
+    y=combined.index.astype(str),
+    palette=['green']*len(best10) + ['red']*len(worst10)
+)
+plt.xlabel('RMSE')
+plt.ylabel('Ward Code')
+plt.title('XGBoost Hold-out RMSE by Ward\n(10 Best in Green, 10 Worst in Red)')
+plt.tight_layout()
+plt.savefig(OUT_DIR / 'xgb_rmse_by_ward_top_bottom10.png')
+plt.close()
+
+# ─── 2) RMSE by Year ─────────────────────────────────────────────────────────────
+year_rmse = (
+    df_hold
+    .groupby('year_num')['error']
+    .apply(lambda e: np.sqrt(np.mean(e**2)))
+    .sort_index()
+)
+plt.figure(figsize=(10, 6))
+year_rmse.plot(marker='o')
+plt.xlabel('Year')
+plt.ylabel('RMSE')
+plt.title('XGBoost Hold-out RMSE by Year')
+plt.tight_layout()
+plt.savefig(OUT_DIR / 'xgb_rmse_by_year.png')
+plt.close()
+
+# Export metrics to JSON
+# per-ward RMSE
+ward_records = ward_rmse.reset_index().rename(columns={'index':'ward_code'}).to_dict(orient='records')
+with open(OUT_DIR / 'xgb_ward_rmse.json', 'w') as f:
+    json.dump(ward_records, f, indent=2)
+
+# per-year RMSE
+year_records = [{'year': int(y), 'rmse': float(r)} for y, r in year_rmse.items()]
+with open(OUT_DIR / 'xgb_year_rmse.json', 'w') as f:
+    json.dump(year_records, f, indent=2)
+
+print(f"✅ Saved plots & JSON into {OUT_DIR}")
+
+# Create a dictionary for RMSE by ward for quick lookup
+ward_rmse_dict = ward_rmse.to_dict()
+
+# Map RMSE to each data point by its ward_code
+df_hold['ward_rmse'] = df_hold['ward_code'].map(ward_rmse_dict)
+
+# Plot RMSE (by ward) vs actual house price (per data point)
+plt.figure(figsize=(12, 8))
+plt.scatter(df_hold['house_price'], df_hold['ward_rmse'], alpha=0.5)
+plt.xlabel('Actual House Price')
+plt.ylabel('RMSE (Prediction Error) by Ward')
+plt.title('XGBoost RMSE vs Actual House Price by Ward')
+plt.grid(True)
+plt.tight_layout()
+plt.savefig(OUT_DIR / 'xgb_rmse_vs_house_price.png')
+plt.close()
+
 
 # 3.3 Find optimal blend weights
 def blend_score(w, p1, p2, y_true):
