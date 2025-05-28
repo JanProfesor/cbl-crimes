@@ -31,12 +31,13 @@ import glob
 from pathlib import Path
 
 
-def load_burglary_data(folder):
-    files = glob.glob(f"{folder}/*-metropolitan-street.csv")
+def load_burglary_data(filter_burglary):
+    files = glob.glob("data/*-metropolitan-street.csv")
     records = []
     for file in files:
         df = pd.read_csv(file, usecols=["Month", "LSOA code", "Crime type"])
-        df = df[df["Crime type"] == "Burglary"]
+        if filter_burglary:
+            df = df[df["Crime type"] == "Burglary"]
         df.rename(columns={"Month": "month", "LSOA code": "lsoa_code"}, inplace=True)
         df["month"] = pd.to_datetime(df["month"], errors="coerce").dt.to_period("M")
         records.append(df)
@@ -44,6 +45,22 @@ def load_burglary_data(folder):
     return (
         df_all.groupby(["lsoa_code", "month"]).size().reset_index(name="burglary_count")
     )
+
+
+def load_burglary_data_from_one_file(path):
+    df = pd.read_csv(path, usecols=["Month", "LSOA code", "Crime type"])
+    df.rename(columns={"Month": "month", "LSOA code": "lsoa_code"}, inplace=True)
+    df["month"] = pd.to_datetime(df["month"], errors="coerce").dt.to_period("M")
+    return df.groupby(["lsoa_code", "month"]).size().reset_index(name="burglary_count")
+
+
+def load_raw_burglary_data():
+    files = glob.glob("data/*-metropolitan-street.csv")
+    records = []
+    for file in files:
+        records.append(pd.read_csv(file))
+    df_all = pd.concat(records)
+    return df_all
 
 
 def load_house_prices(path):
@@ -151,7 +168,7 @@ def load_imd_2010_by_domain(folder):
 
 
 def build_dataset(crime_df, price_df, weather_df, imd_df):
-    lookup = pd.read_csv("lsoa_to_ward_lookup_2020.csv")
+    lookup = pd.read_csv("data/lsoa_to_ward_lookup_2020.csv")
     lsoas_in_lookup = set(lookup["LSOA11CD"])
     crime_df = crime_df[crime_df["lsoa_code"].isin(lsoas_in_lookup)]
     price_df = price_df[price_df["lsoa_code"].isin(lsoas_in_lookup)]
@@ -238,7 +255,13 @@ def build_dataset(crime_df, price_df, weather_df, imd_df):
 
 
 def main():
-    crime = load_burglary_data("data")
+    crime_all = load_burglary_data(False)
+    crime_all_burglary = load_burglary_data(True)
+    crime_raw = load_raw_burglary_data()
+    crime_residential_burglary = load_burglary_data_from_one_file(
+        "filtering_residential_burgary/residential-burglaries.csv"
+    )
+    crime_raw.to_csv("processed/burglary_data.csv", index=False)
     price = load_house_prices("data/median_price_1997-2023.csv")
     weather = load_weather_data("data/weather_2010-2022.csv")
     imd_2010 = load_imd_2010_by_domain("data")
@@ -246,9 +269,17 @@ def main():
     imd_2019 = load_imd_scores("data/imd2019lsoa.csv", (2019, 2022))
     imd_all = pd.concat([imd_2010, imd_2015, imd_2019], ignore_index=True)
 
-    ward_df = build_dataset(crime, price, weather, imd_all)
+    ward_all_df = build_dataset(crime_all, price, weather, imd_all)
+    ward_all_burglary_df = build_dataset(crime_all_burglary, price, weather, imd_all)
+    ward__residential_burglary_df = build_dataset(
+        crime_residential_burglary, price, weather, imd_all
+    )
 
-    ward_df.to_csv("processed/final_dataset.csv", index=False)
+    ward_all_df.to_csv("processed/final_dataset_all.csv", index=False)
+    ward_all_burglary_df.to_csv("processed/final_dataset_all_burglary.csv", index=False)
+    ward__residential_burglary_df.to_csv(
+        "processed/final_dataset_residential_burglary.csv", index=False
+    )
 
 
 if __name__ == "__main__":
