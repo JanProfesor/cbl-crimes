@@ -54,11 +54,11 @@ def main():
     preparer = DataPreparer(csv_path, target_col)
     X_df, y, cat_idxs, cat_dims, _ = preparer.preprocess()
     
-    # NEW: Encode categorical columns
+    
     X_df_encoded, label_encoders = encode_categorical_columns(X_df)
     X_values = X_df_encoded.values
     
-    # Check for any remaining non-numeric data
+    
     print("Data types after encoding:")
     print(X_df_encoded.dtypes)
     print("Any non-numeric values remaining:", X_df_encoded.select_dtypes(include=['object']).columns.tolist())
