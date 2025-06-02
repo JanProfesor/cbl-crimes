@@ -1,0 +1,13 @@
+{
+  "n_d": 122,
+  "n_a": 33,
+  "n_steps": 4,
+  "gamma": 1.5915697312511092,
+  "lambda_sparse": 0.00024247470997369706,
+  "lr": 0.009034810426782123,
+  "weight_decay": 0.009873631034874358,
+  "mask_type": "entmax",
+  "n_shared": 1,
+  "n_independent": 3,
+  "cat_emb_dim": 5
+}
