@@ -42,12 +42,14 @@ class DataJoiner:
         OUTPUT_NON_LONDON.parent.mkdir(parents=True, exist_ok=True)
 
         is_london = merged["borough_code"].str.startswith("E09", na=False)
-        merged[is_london].drop(columns=["borough_code"]).to_csv(
+        is_not_city_of_london = merged["borough_code"] != "E09000001"
+
+        merged[is_london & is_not_city_of_london].drop(columns=["borough_code"]).to_csv(
             OUTPUT_LONDON, index=False
         )
-        merged[~is_london].drop(columns=["borough_code"]).to_csv(
-            OUTPUT_NON_LONDON, index=False
-        )
+        merged[~is_london & is_not_city_of_london].drop(
+            columns=["borough_code"]
+        ).to_csv(OUTPUT_NON_LONDON, index=False)
 
         validate_ward_dataset(merged)
 
