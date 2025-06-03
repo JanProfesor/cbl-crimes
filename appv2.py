@@ -8,6 +8,7 @@ from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.model_selection import train_test_split
 import json
 from pathlib import Path
+import geopandas as gpd
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
@@ -106,22 +107,29 @@ def run_burglary_model():
 @st.cache_data
 def load_geojson():
     """
-    Loads the ward GeoJSON, reprojects it to EPSG:4326 (lat/lon),
-    and returns a Python dict suitable for Plotly.
+    Loads the ward GeoJSON, checks its CRS, and reprojects to EPSG:4326 if needed.
+    Returns a Python dict (GeoJSON) suitable for Plotly.
     """
-    import geopandas as gpd
-    import json
 
+    # 1) Path to your original file
     geojson_fp = PROJECT_ROOT / "data_preparation" / "z_old" / "wards_2020_bsc_wgs84.geojson"
 
-    # 1) Read the raw file (which is actually in EPSG:27700) using GeoPandas:
+    # 2) Read it with GeoPandas
     gdf = gpd.read_file(geojson_fp)
 
-    # 2) Convert to EPSG:4326 (lat/lon) so that Plotly Mapbox can plot it correctly:
-    gdf_wgs = gdf.to_crs(epsg=4326)
+    # 3) Inspect the CRS and fix if necessary:
+    #    - If gdf.crs is None, assume the file is already in EPSG:4326 and just assign it.
+    #    - If gdf.crs is something else (e.g. EPSG:27700), reproject to 4326.
+    if gdf.crs is None:
+        # The GeoJSON might already be in lat/lon, but simply have no CRS metadata.
+        gdf = gdf.set_crs(epsg=4326)
+    elif gdf.crs.to_epsg() != 4326:
+        # Reproject from whatever CRS it currently is to EPSG:4326.
+        gdf = gdf.to_crs(epsg=4326)
 
-    
-    return json.loads(gdf_wgs.to_json())
+    # 4) Convert back to a JSON‐style dict that Plotly can consume.
+    return json.loads(gdf.to_json())
+
 
 
 
