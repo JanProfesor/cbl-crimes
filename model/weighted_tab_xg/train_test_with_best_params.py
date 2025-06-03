@@ -127,6 +127,49 @@ def main():
     print("XGBoost 10-fold CV RMSE:", np.mean(xgb_rmse_list))
     print("Ensemble 10-fold CV RMSE:", np.mean(ens_rmse_list))
 
+   
+    # Print MAE for CV
+    print("TabNet 10-fold CV MAE:", np.mean(tabnet_mae_list))
+    print("XGBoost 10-fold CV MAE:", np.mean(xgb_mae_list))
+    print("Ensemble 10-fold CV MAE:", np.mean(ens_mae_list))
+
+    # Print R² for CV
+    print("TabNet 10-fold CV R²:", np.mean(tabnet_r2_list))
+    print("XGBoost 10-fold CV R²:", np.mean(xgb_r2_list))
+    print("Ensemble 10-fold CV R²:", np.mean(ens_r2_list))
+    
+    cv_metrics = {
+    "TabNet": {
+        "rmse_mean": float(np.mean(tabnet_rmse_list)),
+        "rmse_std": float(np.std(tabnet_rmse_list)),
+        "mae_mean": float(np.mean(tabnet_mae_list)),
+        "mae_std": float(np.std(tabnet_mae_list)),
+        "r2_mean": float(np.mean(tabnet_r2_list)),
+        "r2_std": float(np.std(tabnet_r2_list)),
+    },
+    "XGBoost": {
+        "rmse_mean": float(np.mean(xgb_rmse_list)),
+        "rmse_std": float(np.std(xgb_rmse_list)),
+        "mae_mean": float(np.mean(xgb_mae_list)),
+        "mae_std": float(np.std(xgb_mae_list)),
+        "r2_mean": float(np.mean(xgb_r2_list)),
+        "r2_std": float(np.std(xgb_r2_list)),
+    },
+    "Ensemble": {
+        "rmse_mean": float(np.mean(ens_rmse_list)),
+        "rmse_std": float(np.std(ens_rmse_list)),
+        "mae_mean": float(np.mean(ens_mae_list)),
+        "mae_std": float(np.std(ens_mae_list)),
+        "r2_mean": float(np.mean(ens_r2_list)),
+        "r2_std": float(np.std(ens_r2_list)),
+    }
+}
+
+    cv_json_path = "cv_metrics.json"
+    with open(cv_json_path, "w") as fj:
+        json.dump(cv_metrics, fj, indent=4)
+    print(f"Cross‐validation metrics saved to: {cv_json_path}")
+
     tabnet_final = TabNetModel(cat_idxs, cat_dims, device)
     tabnet_final.train(X_train, y_train, tabnet_params)
     pred_tab_hold = tabnet_final.predict(X_hold)
@@ -149,9 +192,32 @@ def main():
     r2_xgb_hold = r2_score(y_hold, pred_xgb_hold)
     r2_ens_hold = r2_score(y_hold, pred_ens_hold)
 
+    
     print("Hold-out TabNet RMSE:", rmse_tab_hold)
     print("Hold-out XGBoost RMSE:", rmse_xgb_hold)
     print("Hold-out Ensemble RMSE:", rmse_ens_hold)
+
+    # Print MAE for hold-out
+    print("Hold-out TabNet MAE:", mae_tab_hold)
+    print("Hold-out XGBoost MAE:", mae_xgb_hold)
+    print("Hold-out Ensemble MAE:", mae_ens_hold)
+
+    
+    print("Hold-out TabNet R²:", r2_tab_hold)
+    print("Hold-out XGBoost R²:", r2_xgb_hold)
+    print("Hold-out Ensemble R²:", r2_ens_hold)
+
+    holdout_df = pd.DataFrame({
+        "model": ["TabNet", "XGBoost", "Ensemble"],
+        "rmse": [rmse_tab_hold, rmse_xgb_hold, rmse_ens_hold],
+        "mae": [mae_tab_hold, mae_xgb_hold, mae_ens_hold],
+        "r2": [r2_tab_hold, r2_xgb_hold, r2_ens_hold]
+        })
+    holdout_csv_path = "holdout_metrics.csv"
+    holdout_df.to_csv(holdout_csv_path, index=False)
+    print(f"Hold-out metrics saved to: {holdout_csv_path}")
+    
+
 
     results_df = pd.DataFrame({
         "ward": ids_hold["ward_code"],
