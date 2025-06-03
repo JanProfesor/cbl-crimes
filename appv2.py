@@ -106,12 +106,23 @@ def run_burglary_model():
 @st.cache_data
 def load_geojson():
     """
-    Loads the GeoJSON file for London wards.
+    Loads the ward GeoJSON, reprojects it to EPSG:4326 (lat/lon),
+    and returns a Python dict suitable for Plotly.
     """
+    import geopandas as gpd
+    import json
+
     geojson_fp = PROJECT_ROOT / "data_preparation" / "z_old" / "wards_2020_bsc_wgs84.geojson"
-    with open(geojson_fp, "r") as f:
-        gj = json.load(f)
-    return gj
+
+    # 1) Read the raw file (which is actually in EPSG:27700) using GeoPandas:
+    gdf = gpd.read_file(geojson_fp)
+
+    # 2) Convert to EPSG:4326 (lat/lon) so that Plotly Mapbox can plot it correctly:
+    gdf_wgs = gdf.to_crs(epsg=4326)
+
+    
+    return json.loads(gdf_wgs.to_json())
+
 
 
 # ───────────────────────────────────────────────────────────────────
