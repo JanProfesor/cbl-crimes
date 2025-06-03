@@ -160,7 +160,7 @@ def download_crime():
     for archive in archive_map:
         zip_path = base / f"{archive}.zip"
         url = f"https://data.police.uk/data/archive/{archive}.zip"
-        print(f"→ {archive}.zip")
+        print(f"Downloading {archive}.zip")
         stream_with_resume(url, zip_path)
 
         with ZipFile(zip_path) as zf:
@@ -169,7 +169,7 @@ def download_crime():
                 target_dir = base / archive / month_folder
                 target_dir.mkdir(parents=True, exist_ok=True)
                 zf.extract(member, path=target_dir)
-        print(f"✓ extracted to {base/archive}")
+        print(f"Extracted to {base/archive}")
 
 
 def download_lsoa_coords():
@@ -180,7 +180,7 @@ def download_lsoa_coords():
         "https://hub.arcgis.com/api/download/v1/items/"
         "68515293204e43ca8ab56fa13ae8a547/csv?redirect=false&layers=0"
     )
-    print("Requesting download URL for LSOA coordinates…")
+    print("Requesting download URL for LSOA coordinates...")
     resp = requests.get(api_url, timeout=30)
     resp.raise_for_status()
 

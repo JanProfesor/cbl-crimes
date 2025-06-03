@@ -1,7 +1,5 @@
 import pandas as pd
 from pathlib import Path
-from itertools import product
-from tqdm import tqdm
 
 from data_services.crime_service import CrimeService
 from data_services.imd_service import IMDService
@@ -85,7 +83,7 @@ def validate_ward_dataset(df: pd.DataFrame) -> None:
         how="left",
         indicator=True,
     )
-    assert (missing_wards["_merge"] != "left_only").all(), "❌ Missing ward(s)"
+    assert (missing_wards["_merge"] != "left_only").all(), "Missing ward(s)"
 
     expected_months = pd.DataFrame(
         [(y, m) for y in range(2011, 2025) for m in range(1, 13)],
@@ -102,12 +100,10 @@ def validate_ward_dataset(df: pd.DataFrame) -> None:
         how="left",
         indicator=True,
     )
-    assert (
-        merged["_merge"] != "left_only"
-    ).all(), "❌ Missing (ward, year, month) rows"
+    assert (merged["_merge"] != "left_only").all(), "Missing (ward, year, month) rows"
 
     id_cols = {"ward_code", "borough_code", "year", "month"}
     nulls = df.drop(columns=id_cols).isnull().sum()
-    assert (nulls == 0).all(), f"❌ Nulls found in:\n{nulls[nulls > 0]}"
+    assert (nulls == 0).all(), f"Nulls found in:\n{nulls[nulls > 0]}"
 
-    print("✅ Dataset validation passed.")
+    print("Dataset validation passed.")
