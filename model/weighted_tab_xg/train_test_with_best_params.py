@@ -47,7 +47,7 @@ def encode_categorical_columns(X_df):
     return X_df_encoded, label_encoders
 
 def main():
-    csv_path = "processed/final_dataset_residential_burglary_reordered.csv"
+    csv_path = "ward_london.csv"
     target_col = "burglary_count"
     ident_df = _build_identifier_df(csv_path, target_col)
 
