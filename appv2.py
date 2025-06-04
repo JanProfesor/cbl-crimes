@@ -8,21 +8,17 @@ from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.model_selection import train_test_split
 import json
 from pathlib import Path
-import geopandas as gpd
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(layout="wide")
-
 st.sidebar.title("Navigate")
 PAGES = ["About", "Summary Statistics", "Model Overview", "Choropleth Map"]
 selection = st.sidebar.radio("Go to", PAGES)
 
-# Root path (adjust if necessary)
 HERE = Path(__file__).resolve().parent
-PROJECT_ROOT = HERE  # assume app.py lives in project root
-
+PROJECT_ROOT = HERE  # assume this script lives in the project root
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DATA LOADING / CACHING
@@ -31,31 +27,22 @@ PROJECT_ROOT = HERE  # assume app.py lives in project root
 @st.cache_data
 def load_processed_data():
     """
-    Loads final_dataset_residential_burglary.csv, merges ward names,
-    and computes a 'date' column.
-    Returns a DataFrame with all the fields needed for summary stats & dashboard.
+    Loads ward_london.csv, assigns ward_name = ward_code, and computes a 'date' column.
+    Returns a DataFrame used by the Summary Statistics page.
     """
-    data_fp = PROJECT_ROOT / "processed" / "final_dataset_residential_burglary.csv"
+    data_fp = PROJECT_ROOT / "ward_london.csv"
     df = pd.read_csv(data_fp)
+    # ward_london.csv already contains: ['ward_code','year','month', ..., 'burglary_count']
+    df["ward_name"] = df["ward_code"].astype(str)
     df["date"] = pd.to_datetime(df[["year", "month"]].assign(day=1))
-
-    # Load ward lookup
-    lookup_fp = PROJECT_ROOT / "data_preparation" / "z_old" / "lsoa_to_ward_lookup_2020.csv"
-    lookup = pd.read_csv(lookup_fp)
-    ward_lookup = (
-        lookup[["WD20CD", "WD20NM"]]
-        .drop_duplicates()
-        .rename(columns={"WD20CD": "ward_code", "WD20NM": "ward_name"})
-    )
-    df = df.merge(ward_lookup, on="ward_code", how="left")
     return df
-
 
 @st.cache_data
 def load_prediction_data():
     """
-    Loads your test_predictions_final.csv for the Model Overview page.
-    Expects columns: ['ward' or 'ward_name', 'year', 'month', 'actual', 'pred_tabnet', 'pred_xgboost', 'pred_ensemble']
+    Loads test_predictions_final.csv for Model Overview and Choropleth Map pages.
+    Expects columns: ['ward' or 'ward_name', 'year', 'month', 'actual',
+                      'pred_tabnet', 'pred_xgboost', 'pred_ensemble'].
     """
     data_fp = PROJECT_ROOT / "test_predictions_final.csv"
     df = pd.read_csv(data_fp)
@@ -64,25 +51,21 @@ def load_prediction_data():
     df["date"] = pd.to_datetime(df[["year", "month"]].assign(day=1))
     return df
 
-
 @st.cache_data
 def run_burglary_model():
     """
-    Re‐runs your XGBoost model on final_dataset.csv and returns a DataFrame
-    with ['ward_code','year','month','predicted_burglary'] for the Choropleth Map page.
+    Re-runs XGBoost on ward_london.csv and returns a DataFrame
+    with ['ward_code','year','month','predicted_burglary'].
+    (Used only if you need to regenerate predictions on the fly.)
     """
-    # Load full dataset (for training)
-    data_fp = PROJECT_ROOT / "processed" / "final_dataset.csv"
+    data_fp = PROJECT_ROOT / "ward_london.csv"
     df = pd.read_csv(data_fp)
     df["ward_encoded"] = LabelEncoder().fit_transform(df["ward_code"])
 
     features = [
-        "ward_encoded", "year", "month", "house_price", "crime_score",
-        "education_score", "employment_score", "environment_score",
-        "health_score", "housing_score", "income_score",
-        "avg_max_temperature", "max_temperature", "min_max_temperature",
-        "max_temperature_std", "avg_min_temperature", "avg_temperature",
-        "total_rainfall", "max_daily_rainfall", "rainfall_std"
+        "ward_encoded", "year", "month", "house_price", "crime", "education",
+        "employment", "environment", "health", "housing", "income",
+        "tmax", "tmin", "af", "rain", "sun"
     ]
     scaler = MinMaxScaler()
     X = df[features].copy()
@@ -103,39 +86,50 @@ def run_burglary_model():
     output_df["ward_code"] = output_df["ward_code"].astype(str)
     return output_df
 
-
 @st.cache_data
-def load_geojson():
+def load_ward_centroids():
     """
-    Loads the ward GeoJSON, checks its CRS, and reprojects to EPSG:4326 if needed.
-    Returns a Python dict (GeoJSON) suitable for Plotly.
+    Reads lsoa_ward.csv and lsoa_coords.csv, merges them, 
+    and computes the mean latitude/longitude per ward (WD24CD).
+    Returns a DataFrame with columns ['ward_code', 'lat', 'lon'].
     """
+    # 1) Read LSOA-to-ward mapping
+    lsoa_ward = pd.read_csv(PROJECT_ROOT / "data\raw/lsoa_ward/lsoa_ward.csv")
+    #    - columns include "LSOA21CD" and "WD24CD"
+    
+    # 2) Read LSOA centroids
+    lsoa_coords = pd.read_csv(PROJECT_ROOT / "data\raw/lsoa_coords/lsoa_coords.csv")
+    #    - columns include "LSOA21CD", "LAT", "LONG"
 
-    # 1) Path to your original file
-    geojson_fp = PROJECT_ROOT / "data_preparation" / "z_old" / "wards_2020_bsc_wgs84.geojson"
+    # 3) Merge them on LSOA21CD
+    merged = pd.merge(
+        lsoa_ward[["LSOA21CD", "WD24CD"]],
+        lsoa_coords[["LSOA21CD", "LAT", "LONG"]],
+        on="LSOA21CD",
+        how="left"
+    )
 
-    # 2) Read it with GeoPandas
-    gdf = gpd.read_file(geojson_fp)
+    # 4) Compute mean (LAT, LONG) for each WD24CD
+    centroids = (
+        merged
+        .groupby("WD24CD")[["LAT", "LONG"]]
+        .mean()
+        .reset_index()
+        .rename(columns={
+            "WD24CD": "ward_code",
+            "LAT": "lat",
+            "LONG": "lon"
+        })
+    )
 
-    # 3) Inspect the CRS and fix if necessary:
-    #    - If gdf.crs is None, assume the file is already in EPSG:4326 and just assign it.
-    #    - If gdf.crs is something else (e.g. EPSG:27700), reproject to 4326.
-    if gdf.crs is None:
-        # The GeoJSON might already be in lat/lon, but simply have no CRS metadata.
-        gdf = gdf.set_crs(epsg=4326)
-    elif gdf.crs.to_epsg() != 4326:
-        # Reproject from whatever CRS it currently is to EPSG:4326.
-        gdf = gdf.to_crs(epsg=4326)
+    # 5) Cast ward_code to string
+    centroids["ward_code"] = centroids["ward_code"].astype(str)
 
-    # 4) Convert back to a JSON‐style dict that Plotly can consume.
-    return json.loads(gdf.to_json())
+    return centroids
 
-
-
-
-# ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # PAGE: “About”
-# ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 if selection == "About":
     st.title("About This Dashboard Suite")
 
@@ -169,19 +163,19 @@ if selection == "About":
 
         ### 3. Choropleth Map  
         - **Geographic Forecast**:  
-          - Interactive Mapbox-based map of London wards, shaded by predicted burglary count.  
-          - Hover on wards to view code and predicted values.  
+          - Map of London wards, with a point at each ward centroid, colored by predicted burglary error.  
+          - Hover on points to view ward code and error.  
         - **Purpose**:  
-          - Visualize “hot spots” of expected demand.  
+          - Visualize “hot spots” of model under/over-prediction.  
           - Help policing teams allocate resources more efficiently.
 
         ---
         """
     )
 
-# ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # PAGE: “Summary Statistics”
-# ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 elif selection == "Summary Statistics":
     df = load_processed_data()
 
@@ -215,7 +209,7 @@ elif selection == "Summary Statistics":
     total_burglary = int(dff["burglary_count"].sum())
     avg_burg_per_ward = dff.groupby("ward_code")["burglary_count"].mean().mean()
     avg_price = dff["house_price"].mean()
-    avg_crime = dff["crime_score"].mean()
+    avg_crime = dff["crime"].mean()
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Residential Burglaries (Selected Period)", f"{total_burglary:,}")
@@ -228,15 +222,15 @@ elif selection == "Summary Statistics":
     # 4) X/Y selectors for scatter plot
     numeric_cols = [
         "burglary_count", "house_price",
-        "crime_score", "education_score", "employment_score",
-        "environment_score", "health_score", "housing_score", "income_score"
+        "crime", "education", "employment",
+        "environment", "health", "housing", "income"
     ]
     sc1, sc2 = st.columns(2)
     with sc1:
         x_attr = st.selectbox(
             "Scatter X‐axis",
             options=numeric_cols,
-            index=numeric_cols.index("crime_score")
+            index=numeric_cols.index("crime")
         )
     with sc2:
         y_attr = st.selectbox(
@@ -247,16 +241,13 @@ elif selection == "Summary Statistics":
 
     st.markdown("")  # small gap before charts
 
-    # 5) Build & cache the four figures in one shot
     @st.cache_data
     def build_summary_figs(start_ts, end_ts, x_attr, y_attr):
-        # Re‐filter the global df to avoid pickling issues
         df2 = load_processed_data()  # cached load
         mask2 = (df2["date"] >= start_ts) & (df2["date"] <= end_ts)
         dff2 = df2.loc[mask2].copy()
 
         # 5A) Scatter with regression
-        # Optionally sample to speed up plotting if very large:
         if len(dff2) > 5000:
             d_sample = dff2.sample(5000, random_state=42)
         else:
@@ -274,7 +265,6 @@ elif selection == "Summary Statistics":
                 name="Data points"
             )
         )
-        # Compute regression on the *full* filtered set (not just sample):
         if len(dff2) > 1:
             x_clean = pd.to_numeric(dff2[x_attr], errors="coerce").dropna()
             y_clean = pd.to_numeric(dff2[y_attr], errors="coerce").loc[x_clean.index]
@@ -325,7 +315,7 @@ elif selection == "Summary Statistics":
             margin=dict(l=20, r=20, t=50, b=30)
         )
         fig_bar.update_xaxes(showgrid=True, gridcolor="black", gridwidth=0.5)
-        fig_bar.update_yaxes(showgrid=True, gridcolor="black", gridwidth=0.5)
+        fig_bar.update_yaxes(showgrid=True, graphcolor="black", gridwidth=0.5)
 
         # 5C) Time series: Avg Monthly Burglaries
         ts2 = dff2.groupby("date")["burglary_count"].mean().reset_index()
@@ -347,8 +337,8 @@ elif selection == "Summary Statistics":
 
         # 5D) Parallel coordinates: Domain Scores vs. Avg Burglaries
         domain_cols2 = [
-            "crime_score", "education_score", "employment_score",
-            "environment_score", "health_score", "housing_score", "income_score"
+            "crime", "education", "employment",
+            "environment", "health", "housing", "income"
         ]
         parallel_df = (
             dff2.groupby("ward_name")[domain_cols2 + ["burglary_count"]]
@@ -371,10 +361,8 @@ elif selection == "Summary Statistics":
 
         return fig_sc, fig_bar, fig_ts, fig_par
 
-    # Call the cached builder
     fig_scatter, fig_bar, fig_ts, fig_par = build_summary_figs(start_ts, end_ts, x_attr, y_attr)
 
-    # 6) Display all four charts
     st.plotly_chart(fig_scatter, use_container_width=True)
     st.plotly_chart(fig_bar,     use_container_width=True)
     st.plotly_chart(fig_ts,      use_container_width=True)
@@ -385,21 +373,17 @@ elif selection == "Summary Statistics":
 # ─────────────────────────────────────────────────────────────────────────────
 elif selection == "Model Overview":
     data = load_prediction_data()
-    
     st.title("Model Performance Dashboard")
     st.markdown("Choose a ward to see actual vs. predicted burglary counts over time.")
 
-    # Sidebar dropdown (re‐use sidebar if desired, or put it on the main area)
     ward_list = sorted(data["ward_name"].unique())
     selected_ward = st.selectbox("Select Ward", ward_list)
 
-    # Filter data for that ward
     ward_df = data[data["ward_name"] == selected_ward].sort_values("date")
     st.subheader(f"Time Series: {selected_ward}")
     if ward_df.empty:
         st.write("No data available for this ward.")
     else:
-        # Build a Plotly figure rather than Matplotlib, so that it embeds more cleanly
         fig = go.Figure()
         fig.add_trace(
             go.Scatter(
@@ -431,7 +415,6 @@ elif selection == "Model Overview":
         fig.update_xaxes(tickformat="%Y-%m")
         st.plotly_chart(fig, use_container_width=True)
 
-        # Show numeric metrics table
         st.subheader("Numeric Metrics Over Time")
         metrics_df = ward_df[
             ["date", "actual", "pred_tabnet", "pred_xgboost", "pred_ensemble"]
@@ -447,63 +430,72 @@ elif selection == "Model Overview":
         st.dataframe(metrics_df, use_container_width=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PAGE: “Choropleth Map” (with month selector + error‐map)
+# PAGE: “Choropleth Map” → now scatter_mapbox via centroids
 # ─────────────────────────────────────────────────────────────────────────────
 elif selection == "Choropleth Map":
-    
     st.title("Prediction Error Map")
     st.markdown(
         """
-        Select a year-month below. The map will color each ward by 
-        the absolute error of our ensemble model for that ward in the chosen month.
+        Select a year‐month below. The map will place a circle at each ward’s centroid,
+        colored (and optionally sized) by the absolute error of our ensemble model
+        in that ward for the chosen month.  
         (Error = |Actual – Predicted|.)
         """
     )
 
     # 1) Load precomputed prediction DataFrame
-    #    Expects columns: ['ward' (code), 'ward_name', 'year', 'month', 'actual', 'pred_ensemble', …]
     data = load_prediction_data()
 
-    # 2) Build a month‐string column (e.g. "2024-05") and sort
+    # 2) Build a "YYYY‐MM" column for month selection
     data["month_str"] = data["date"].dt.strftime("%Y-%m")
     month_options = sorted(data["month_str"].unique())
 
-    # 3) Let the user pick one month
-    selected_month = st.selectbox("Select Year-Month", month_options)
+    # 3) User picks a single year-month
+    selected_month = st.selectbox("Select Year‐Month", month_options)
 
-    # 4) Filter to only that month, compute absolute error
+    # 4) Filter to that month & compute absolute error
     df_month = data[data["month_str"] == selected_month].copy()
     if df_month.empty:
         st.warning(f"No data available for {selected_month}.")
         st.stop()
 
-    # Make sure ward_code is a string (to match geojson)
+    # 4A) Ensure ward_code is a string
     df_month["ward_code"] = df_month["ward"].astype(str)
 
-    # Compute absolute error of the ensemble
+    # 4B) Compute absolute error of the ensemble
     df_month["error"] = (df_month["actual"] - df_month["pred_ensemble"]).abs()
 
-    # 5) Load the GeoJSON for London wards (cached)
-    geojson = load_geojson()
+    # 5) Load ward centroids (lat/lon)
+    centroids = load_ward_centroids()
+    #    centroids has columns: ['ward_code', 'lat', 'lon']
 
-    # 6) Build the choropleth_mapbox: coloring by “error”
-    fig_map = px.choropleth_mapbox(
+    # 6) Merge error with centroids
+    df_map = pd.merge(
         df_month,
-        geojson=geojson,
-        featureidkey="properties.WD20CD",     # assuming WD20CD is the ward_code in your geojson
-        locations="ward_code",               # must match ward_code in df_month
+        centroids,
+        on="ward_code",
+        how="left"
+    )
+
+    # 7) Drop any wards missing latitude or longitude
+    df_map = df_map.dropna(subset=["lat", "lon"])
+
+    # 8) Build a scatter_mapbox: one point per ward
+    fig_map = px.scatter_mapbox(
+        df_map,
+        lat="lat",
+        lon="lon",
         color="error",
-        mapbox_style="carto-positron",
-        center={"lat": 51.5, "lon": 0.1},
-        zoom=10,
-        opacity=0.75,
+        size="error",
         color_continuous_scale="Reds",
-        labels={"error": "Absolute Error"},
+        size_max=15,
+        zoom=10,
+        mapbox_style="carto-positron",
+        hover_name="ward_name",
+        hover_data={"error": True, "ward_code": True},
         title=f"Absolute Error by Ward for {selected_month}"
     )
     fig_map.update_layout(margin={"r":0,"t":30,"l":0,"b":0})
 
-    # 7) Display
+    # 9) Display the map
     st.plotly_chart(fig_map, use_container_width=True)
-
-
