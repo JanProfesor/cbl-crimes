@@ -13,7 +13,7 @@ class TabNetModel:
             n_d=params['n_d'], n_a=params['n_a'], n_steps=params['n_steps'], gamma=params['gamma'],
             cat_idxs=self.cat_idxs, cat_dims=self.cat_dims, cat_emb_dim=params.get('cat_emb_dim', 1),
             optimizer_fn=torch.optim.Adam,
-            optimizer_params={'lr':params['lr'], 'weight_decay':params.get('weight_decay', 0)},
+            optimizer_params={'lr':params['lr'], 'weight_decay':params.get('weight_decay', 1e-5)},
             scheduler_fn=torch.optim.lr_scheduler.StepLR,
             scheduler_params={'step_size':10, 'gamma':0.8},
             momentum=params.get('momentum', 0.3), mask_type=params.get('mask_type', 'sparsemax'),

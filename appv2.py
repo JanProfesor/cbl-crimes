@@ -21,7 +21,7 @@ selection = st.sidebar.radio("Go to", PAGES)
 
 # Root path (adjust if necessary)
 HERE = Path(__file__).resolve().parent
-PROJECT_ROOT = HERE  # assume app.py lives in project root
+PROJECT_ROOT = HERE  # assume appv2.py lives in project root
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -54,7 +54,7 @@ def load_processed_data():
 @st.cache_data
 def load_prediction_data():
     """
-    Loads your test_predictions_final.csv for the Model Overview page.
+    Loads your test_predictions_final.csv for the Model Overview & Choropleth Map pages.
     Expects columns: ['ward' or 'ward_name', 'year', 'month', 'actual', 'pred_tabnet', 'pred_xgboost', 'pred_ensemble']
     """
     data_fp = PROJECT_ROOT / "test_predictions_final.csv"
@@ -110,7 +110,6 @@ def load_geojson():
     Loads the ward GeoJSON, checks its CRS, and reprojects to EPSG:4326 if needed.
     Returns a Python dict (GeoJSON) suitable for Plotly.
     """
-
     # 1) Path to your original file
     geojson_fp = PROJECT_ROOT / "data_preparation" / "z_old" / "wards_2020_bsc_wgs84.geojson"
 
@@ -131,11 +130,9 @@ def load_geojson():
     return json.loads(gdf.to_json())
 
 
-
-
-# ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # PAGE: “About”
-# ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 if selection == "About":
     st.title("About This Dashboard Suite")
 
@@ -179,9 +176,9 @@ if selection == "About":
         """
     )
 
-# ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # PAGE: “Summary Statistics”
-# ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 elif selection == "Summary Statistics":
     df = load_processed_data()
 
@@ -247,16 +244,13 @@ elif selection == "Summary Statistics":
 
     st.markdown("")  # small gap before charts
 
-    # 5) Build & cache the four figures in one shot
     @st.cache_data
     def build_summary_figs(start_ts, end_ts, x_attr, y_attr):
-        # Re‐filter the global df to avoid pickling issues
         df2 = load_processed_data()  # cached load
         mask2 = (df2["date"] >= start_ts) & (df2["date"] <= end_ts)
         dff2 = df2.loc[mask2].copy()
 
         # 5A) Scatter with regression
-        # Optionally sample to speed up plotting if very large:
         if len(dff2) > 5000:
             d_sample = dff2.sample(5000, random_state=42)
         else:
@@ -274,7 +268,6 @@ elif selection == "Summary Statistics":
                 name="Data points"
             )
         )
-        # Compute regression on the *full* filtered set (not just sample):
         if len(dff2) > 1:
             x_clean = pd.to_numeric(dff2[x_attr], errors="coerce").dropna()
             y_clean = pd.to_numeric(dff2[y_attr], errors="coerce").loc[x_clean.index]
@@ -380,12 +373,12 @@ elif selection == "Summary Statistics":
     st.plotly_chart(fig_ts,      use_container_width=True)
     st.plotly_chart(fig_par,     use_container_width=True)
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: “Model Overview”
 # ─────────────────────────────────────────────────────────────────────────────
 elif selection == "Model Overview":
     data = load_prediction_data()
-    
     st.title("Model Performance Dashboard")
     st.markdown("Choose a ward to see actual vs. predicted burglary counts over time.")
 
@@ -446,6 +439,7 @@ elif selection == "Model Overview":
         metrics_df = metrics_df.set_index("date")
         st.dataframe(metrics_df, use_container_width=True)
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: “Choropleth Map” (with month selector + error‐map)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -505,5 +499,3 @@ elif selection == "Choropleth Map":
 
     # 7) Display
     st.plotly_chart(fig_map, use_container_width=True)
-
-

@@ -8,6 +8,10 @@ from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.model_selection import train_test_split
 import json
 from pathlib import Path
+from model.weighted_tab_xg.data_preparer_noscale import DataPreparerNoLeakage 
+
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
@@ -52,15 +56,37 @@ def load_processed_data():
 @st.cache_data
 def load_prediction_data():
     """
-    Loads your test_predictions_final.csv for the Model Overview page.
-    Expects columns: ['ward' or 'ward_name', 'year', 'month', 'actual', 'pred_tabnet', 'pred_xgboost', 'pred_ensemble']
+    Loads test_predictions_final.csv for the Model Overview page,
+    then merges on the ward names from Wards_names.csv so that
+    each record has a human‐readable 'ward_name'.
     """
-    data_fp = PROJECT_ROOT / "test_predictions_final.csv"
+    # 1) Load the raw predictions CSV
+    data_fp = PROJECT_ROOT / "test_predictions_fixed.csv"
     df = pd.read_csv(data_fp)
-    if "ward_name" not in df.columns:
-        df["ward_name"] = df["ward"].astype(str)
+
+    # 2) If it only has a numeric 'ward' column, rename it to ward_code
+    if "ward" in df.columns and "ward_name" not in df.columns:
+        df = df.rename(columns={"ward": "ward_code"})
+    elif "ward_code" not in df.columns:
+        st.error("Expected a 'ward' or 'ward_code' column in test_predictions_fixed.csv")
+        return pd.DataFrame()  # return empty if something is wrong
+
+    # 3) Load the ward‐lookup CSV (Wards_names.csv) from data_preparation/z_old
+    lookup_fp = PROJECT_ROOT / "data_preparation" / "z_old" / "Wards_names.csv"
+    lookup = pd.read_csv(lookup_fp)
+    # Make sure the lookup columns match:
+    #   WD23CD = ward code, WD23NM = ward name
+    lookup = lookup.rename(columns={"WD23CD": "ward_code", "WD23NM": "ward_name"})
+    lookup = lookup[["ward_code", "ward_name"]].drop_duplicates()
+
+    # 4) Merge the lookup into your predictions DataFrame
+    df = df.merge(lookup, on="ward_code", how="left")
+
+    # 5) Create a datetime column for filtering and plotting
     df["date"] = pd.to_datetime(df[["year", "month"]].assign(day=1))
+
     return df
+
 
 
 @st.cache_data
@@ -365,20 +391,42 @@ elif selection == "Summary Statistics":
 # ─────────────────────────────────────────────────────────────────────────────
 elif selection == "Model Overview":
     data = load_prediction_data()
+    preparer = DataPreparerNoLeakage("processed/final_dataset_residential_burglary_reordered.csv",
+                                  "burglary_count")
+    _, _, train_end_date = preparer.preprocess_split_aware()
+    # Double‐check that ward_name was populated after merge:
+    # If some codes never matched, you’ll see them here. (Optionally remove this
+    # debug‐print in production.)
+    missing_names = data.loc[data["ward_name"].isna(), "ward_code"].unique().tolist()
+    if missing_names:
+        st.warning(f"Warning: {len(missing_names)} ward codes missing names (they’ll appear as code–code).")
+
     st.title("Model Performance Dashboard")
     st.markdown("Choose a ward to see actual vs. predicted burglary counts over time.")
 
-    # Sidebar dropdown (re‐use sidebar if desired, or put it on the main area)
-    ward_list = sorted(data["ward_name"].unique())
-    selected_ward = st.selectbox("Select Ward", ward_list)
+    # 1) Create a combined display column:
+    #   If ward_name is missing, fallback to ward_code itself
+    data["ward_display"] = data["ward_code"] + " – " + data["ward_name"].fillna(data["ward_code"])
 
-    # Filter data for that ward
-    ward_df = data[data["ward_name"] == selected_ward].sort_values("date")
-    st.subheader(f"Time Series: {selected_ward}")
+    # 2) Build a sorted list of unique display values for the dropdown
+    ward_list = sorted(data["ward_display"].unique())
+
+    # 3) Let the user pick a combined display string
+    selected_display = st.selectbox("Select Ward (code – name)", ward_list)
+
+    # 4) Extract the ward_code portion by splitting on " – "
+    selected_code = selected_display.split(" – ")[0]
+
+    # 5) Filter rows where ward_code == selected_code
+    ward_df = data[data["ward_code"] == selected_code].sort_values("date")
+
+    # 6) Show the combined display in the header
+    st.subheader(f"Time Series: {selected_display}")
+
     if ward_df.empty:
         st.write("No data available for this ward.")
     else:
-        # Build a Plotly figure rather than Matplotlib, so that it embeds more cleanly
+        # 7) Build a Plotly figure: Actual vs. Ensemble Predicted
         fig = go.Figure()
         fig.add_trace(
             go.Scatter(
@@ -390,18 +438,35 @@ elif selection == "Model Overview":
                 line=dict(color="#1f77b4", width=2),
             )
         )
-        fig.add_trace(
-            go.Scatter(
-                x=ward_df["date"],
-                y=ward_df["pred_ensemble"],
+        # 2) Ensemble Predicted (TRAIN portion in orange)
+        train_mask = ward_df["date"] <= train_end_date
+        if train_mask.any():
+            fig.add_trace(
+                go.Scatter(
+                x=ward_df.loc[train_mask, "date"],
+                y=ward_df.loc[train_mask, "pred_ensemble"],
                 mode="lines+markers",
-                name="Ensemble Predicted",
+                name="Ensemble Predicted (Train)",
                 marker=dict(symbol="x", size=6),
-                line=dict(color="#ff7f0e", width=2),
+                line=dict(color="orange", width=2),
             )
         )
+
+        # 3) Ensemble Predicted (TEST portion in green)
+        test_mask = ward_df["date"] > train_end_date
+        if test_mask.any():
+            fig.add_trace(
+                go.Scatter(
+                    x=ward_df.loc[test_mask, "date"],
+                    y=ward_df.loc[test_mask, "pred_ensemble"],
+                    mode="lines+markers",
+                    name="Ensemble Predicted (Test)",
+                    marker=dict(symbol="x", size=6),
+                    line=dict(color="green", width=2),
+                )
+            )
         fig.update_layout(
-            title=f"Actual vs. Ensemble Predicted for Ward: {selected_ward}",
+            title=f"Actual vs. Ensemble Predicted for {selected_display}",
             xaxis_title="Date",
             yaxis_title="Burglary Count",
             template="plotly_white",
@@ -410,20 +475,21 @@ elif selection == "Model Overview":
         fig.update_xaxes(tickformat="%Y-%m")
         st.plotly_chart(fig, use_container_width=True)
 
-        # Show numeric metrics table
-        st.subheader("Numeric Metrics Over Time")
-        metrics_df = ward_df[
-            ["date", "actual", "pred_tabnet", "pred_xgboost", "pred_ensemble"]
-        ].copy()
-        metrics_df = metrics_df.rename(
-            columns={
-                "pred_tabnet": "TabNet Prediction",
-                "pred_xgboost": "XGBoost Prediction",
-                "pred_ensemble": "Ensemble Prediction",
-            }
-        )
-        metrics_df = metrics_df.set_index("date")
-        st.dataframe(metrics_df, use_container_width=True)
+        # 8) Show numeric metrics (including both code and name)
+        st.subheader(f"Numeric Metrics Over Time: {selected_display}")
+        metrics_df = ward_df[[
+            "date", "ward_code", "ward_name", "actual", "pred_tabnet", "pred_xgboost", "pred_ensemble"
+        ]].copy()
+        metrics_df = metrics_df.rename(columns={
+            "ward_code": "Ward Code",
+            "ward_name": "Ward Name",
+            "actual": "Actual",
+            "pred_tabnet": "TabNet Prediction",
+            "pred_xgboost": "XGBoost Prediction",
+            "pred_ensemble": "Ensemble Prediction"
+        })
+        st.dataframe(metrics_df.set_index("date"), use_container_width=True)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: “Choropleth Map”
