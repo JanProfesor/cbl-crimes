@@ -148,28 +148,30 @@ def stream_with_resume(url: str, out_path: Path, chunk=1 << 20):
 
 
 def download_crime():
-    archive_map = {
-        "2015-12": (2010, 2015),
-        "2018-12": (2016, 2018),
-        "2021-12": (2019, 2021),
-        "2024-12": (2022, 2024),
-    }
+    archives = ["2015-12", "2018-12", "2021-12", "2024-12"]
     base = Path("data/raw/crime")
     base.mkdir(parents=True, exist_ok=True)
 
-    for archive in archive_map:
-        zip_path = base / f"{archive}.zip"
+    for archive in archives:
         url = f"https://data.police.uk/data/archive/{archive}.zip"
+        zip_path = base / f"{archive}.zip"
+        target_folder = base / archive
         print(f"Downloading {archive}.zip")
         stream_with_resume(url, zip_path)
 
-        with ZipFile(zip_path) as zf:
-            for member in [m for m in zf.namelist() if m.endswith("-street.csv")]:
-                month_folder = Path(member).parts[0]
-                target_dir = base / archive / month_folder
-                target_dir.mkdir(parents=True, exist_ok=True)
-                zf.extract(member, path=target_dir)
-        print(f"Extracted to {base/archive}")
+        print(f"\nExtracting {zip_path.name}")
+        with ZipFile(zip_path, "r") as zf:
+            zf.extractall(path=target_folder)
+
+        for subfolder in target_folder.iterdir():
+            if subfolder.is_dir():
+                for file in subfolder.iterdir():
+                    if file.is_file() and not file.name.endswith("-street.csv"):
+                        file.unlink()
+
+        zip_path.unlink()
+
+        print(f"Done with {archive}\n")
 
 
 def download_lsoa_coords():
@@ -216,9 +218,9 @@ def main():
     # download_weather()
     # download_house_prices()
     # download_imd()
-    # download_crime()
-    download_lsoa_coords()
-    download_lsoa_ward()
+    download_crime()
+    # download_lsoa_coords()
+    # download_lsoa_ward()
     print("All raw data downloaded.")
 
 

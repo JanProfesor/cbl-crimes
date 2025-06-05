@@ -61,8 +61,13 @@ class HousePriceService:
         mapping = mapping[["lsoa_code", "ward_code", "borough_code"]]
 
         merged = df.merge(mapping, on="lsoa_code", how="left")
-        merged = merged.sort_values(["ward_code", "month_period"])
-        merged["house_price"] = merged.groupby("ward_code")["house_price"].ffill()
+
+        # Aggregate all LSOAs into average price per ward per month
+        merged = (
+            merged.groupby(["ward_code", "borough_code", "month_period"])["house_price"]
+            .mean()
+            .reset_index()
+        )
 
         merged = merged[merged["month_period"].between("2010-12", "2024-12")]
 
@@ -82,6 +87,9 @@ class HousePriceService:
             merged[["ward_code", "borough_code", "month_period", "house_price"]],
             on=["ward_code", "borough_code", "month_period"],
             how="left",
+        )
+        full_df["house_price"] = full_df.groupby("ward_code")["house_price"].transform(
+            lambda x: x.ffill().bfill()
         )
         full_df["house_price"] = full_df.groupby("ward_code")["house_price"].transform(
             lambda grp: grp.fillna(grp.mean())

@@ -106,4 +106,10 @@ def validate_ward_dataset(df: pd.DataFrame) -> None:
     nulls = df.drop(columns=id_cols).isnull().sum()
     assert (nulls == 0).all(), f"Nulls found in:\n{nulls[nulls > 0]}"
 
+    df_copy = df.copy()
+    df_copy["date"] = pd.to_datetime(df_copy[["year", "month"]].assign(day=1))
+    duplicates = df_copy[df_copy.duplicated(subset=["date", "ward_code"], keep=False)]
+    duplicates = duplicates.sort_values(by=["ward_code", "date"])
+    assert duplicates.empty, "Duplicate rows found"
+
     print("Dataset validation passed.")
