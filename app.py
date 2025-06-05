@@ -8,6 +8,10 @@ from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.model_selection import train_test_split
 import json
 from pathlib import Path
+from model.weighted_tab_xg.data_preparer_noscale import DataPreparerNoLeakage 
+
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
@@ -57,14 +61,14 @@ def load_prediction_data():
     each record has a human‐readable 'ward_name'.
     """
     # 1) Load the raw predictions CSV
-    data_fp = PROJECT_ROOT / "test_predictions_final.csv"
+    data_fp = PROJECT_ROOT / "test_predictions_fixed.csv"
     df = pd.read_csv(data_fp)
 
     # 2) If it only has a numeric 'ward' column, rename it to ward_code
     if "ward" in df.columns and "ward_name" not in df.columns:
         df = df.rename(columns={"ward": "ward_code"})
     elif "ward_code" not in df.columns:
-        st.error("Expected a 'ward' or 'ward_code' column in test_predictions_final.csv")
+        st.error("Expected a 'ward' or 'ward_code' column in test_predictions_fixed.csv")
         return pd.DataFrame()  # return empty if something is wrong
 
     # 3) Load the ward‐lookup CSV (Wards_names.csv) from data_preparation/z_old
@@ -387,7 +391,9 @@ elif selection == "Summary Statistics":
 # ─────────────────────────────────────────────────────────────────────────────
 elif selection == "Model Overview":
     data = load_prediction_data()
-
+    preparer = DataPreparerNoLeakage("processed/final_dataset_residential_burglary_reordered.csv",
+                                  "burglary_count")
+    _, _, train_end_date = preparer.preprocess_split_aware()
     # Double‐check that ward_name was populated after merge:
     # If some codes never matched, you’ll see them here. (Optionally remove this
     # debug‐print in production.)
@@ -432,16 +438,33 @@ elif selection == "Model Overview":
                 line=dict(color="#1f77b4", width=2),
             )
         )
-        fig.add_trace(
-            go.Scatter(
-                x=ward_df["date"],
-                y=ward_df["pred_ensemble"],
+        # 2) Ensemble Predicted (TRAIN portion in orange)
+        train_mask = ward_df["date"] <= train_end_date
+        if train_mask.any():
+            fig.add_trace(
+                go.Scatter(
+                x=ward_df.loc[train_mask, "date"],
+                y=ward_df.loc[train_mask, "pred_ensemble"],
                 mode="lines+markers",
-                name="Ensemble Predicted",
+                name="Ensemble Predicted (Train)",
                 marker=dict(symbol="x", size=6),
-                line=dict(color="#ff7f0e", width=2),
+                line=dict(color="orange", width=2),
             )
         )
+
+        # 3) Ensemble Predicted (TEST portion in green)
+        test_mask = ward_df["date"] > train_end_date
+        if test_mask.any():
+            fig.add_trace(
+                go.Scatter(
+                    x=ward_df.loc[test_mask, "date"],
+                    y=ward_df.loc[test_mask, "pred_ensemble"],
+                    mode="lines+markers",
+                    name="Ensemble Predicted (Test)",
+                    marker=dict(symbol="x", size=6),
+                    line=dict(color="green", width=2),
+                )
+            )
         fig.update_layout(
             title=f"Actual vs. Ensemble Predicted for {selected_display}",
             xaxis_title="Date",
