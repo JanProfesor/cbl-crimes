@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import TimeSeriesSplit, train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 import warnings
 
@@ -79,7 +79,7 @@ def fix_data_issues(X, y):
 
 def main():
     # ─── CONFIGURATION ───────────────────────────────────────────────────────────
-    csv_path   = "processed/final_dataset_residential_burglary_reordered.csv"
+    csv_path   = "ward_london.csv"
     target_col = "burglary_count"
     ensemble_w = 0.48
     device     = "cuda" if torch.cuda.is_available() else "cpu"
@@ -188,7 +188,8 @@ def main():
             print("WARNING: Not enough data for cross-validation, skipping CV...")
             cv_metrics = None
         else:
-            tscv = TimeSeriesSplit(n_splits=3, test_size=max(100, len(X_cv)//10))
+            # Fixed test_size for consistency across dataset sizes
+            tscv = TimeSeriesSplit(n_splits=3, test_size=300)
   
             tabnet_scores = {'rmse': [], 'mae': [], 'r2': []}
             xgb_scores   = {'rmse': [], 'mae': [], 'r2': []}
@@ -203,14 +204,24 @@ def main():
             except FileNotFoundError:
                 print("Using improved default parameters")
                 tabnet_params = {
-                    'n_d': 16, 'n_a': 16, 'n_steps': 3, 'gamma': 1.3,
-                    'lr': 0.02, 'batch_size': 512, 'virtual_batch_size': 256,
-                    'max_epochs': 50, 'patience': 10
+                    'n_d': 32, 'n_a': 32, 'n_steps': 5, 'gamma': 1.5,
+                    'lr': 0.01, 'batch_size': 1024, 'virtual_batch_size': 512,
+                    'max_epochs': 100, 'patience': 10, 'mask_type': 'entmax',
+                    'lambda_sparse': 1e-3, 'weight_decay': 1e-5
                 }
                 xgb_params = {
-                    'n_estimators': 100, 'max_depth': 6, 'learning_rate': 0.1,
-                    'subsample': 0.8, 'colsample_bytree': 0.8,
-                    'random_state': 42, 'verbosity': 0
+                    'n_estimators': 1000,
+                    'max_depth': 8,
+                    'learning_rate': 0.05,
+                    'subsample': 0.8,
+                    'colsample_bytree': 0.8,
+                    'reg_alpha': 0.1,
+                    'reg_lambda': 10,
+                    'random_state': 42,
+                    'verbosity': 0,
+                    # GPU flags can be overridden per‐fold if needed
+                    'tree_method': 'gpu_hist',
+                    'predictor': 'gpu_predictor'
                 }
 
             print("\nRunning time-aware cross-validation...")
@@ -220,42 +231,56 @@ def main():
                 try:
                     X_tr, X_val = X_cv[tr_idx], X_cv[val_idx]
                     y_tr, y_val = y_cv[tr_idx], y_cv[val_idx]
-        
+
                     # Skip fold if insufficient data
                     if len(X_tr) < 50 or len(X_val) < 10:
                         print(f"Fold {fold}: Insufficient data, skipping...")
                         continue
-        
+
                     print(f"Fold {fold}: Train={len(X_tr)}, Val={len(X_val)}")
 
-                    # ─── TRAIN TabNet on log‐transformed target ────────────────────────────
-                    tabnet = TabNetModel(cat_idxs_new, cat_dims_new, device)
-                    tabnet.train(X_tr, y_tr, tabnet_params)
+                    # ─── Split X_tr, y_tr into an internal train/val for both models ───
+                    X_tr_sub, X_val_sub, y_tr_sub, y_val_sub = train_test_split(
+                        X_tr, y_tr,
+                        test_size=0.1,
+                        shuffle=False   # preserve time order
+                    )
 
-                    # TabNet’s predict() returns predictions in log-space
+                    # ─── TRAIN TabNet with early stopping on the internal val subset ───
+                    tabnet = TabNetModel(cat_idxs_new, cat_dims_new, device)
+                    tabnet.train(
+                        X_tr_sub,
+                        y_tr_sub,
+                        tabnet_params,
+                        X_val=X_val_sub,
+                        y_val=y_val_sub
+                    )
+                    # Predict on the *outer* fold’s X_val:
                     pred_tab_log = tabnet.predict(X_val).astype(float)
-                    # Convert back to original burglary‐count scale
                     pred_tab = np.expm1(pred_tab_log)
 
-                    # ─── TRAIN XGBoost on log‐transformed target ─────────────────────────
-                    xgbm = XGBoostModel(device)
-                    xgbm.train(X_tr, y_tr, xgb_params)
+                    # ─── TRAIN XGBoost with early stopping on the internal val subset ─
+                    # Ensure GPU acceleration flags (if you have a CUDA GPU)
+                    xgb_params['tree_method'] = 'gpu_hist'
+                    xgb_params['predictor']   = 'gpu_predictor'
 
-                    # XGBoost’s predict() also returns predictions in log-space
+                    xgbm = XGBoostModel(device)
+                    xgbm.train(
+                        X_tr_sub,
+                        y_tr_sub,
+                        xgb_params,
+                        eval_set=(X_val_sub, y_val_sub)  # pass validation for early stopping
+                    )
+                    # Predict on the *outer* fold’s X_val:
                     pred_xgb_log = xgbm.predict(X_val).astype(float)
-                    # Convert back to original scale
                     pred_xgb = np.expm1(pred_xgb_log)
 
-                    # Handle any NaNs or infinities (just in case)
-                    # We use expm1(y_val.mean()) as a fallback “typical burglary count”
+                    # Handle any NaNs or infinities
                     pred_tab = np.nan_to_num(pred_tab, nan=np.expm1(y_val.mean()))
                     pred_xgb = np.nan_to_num(pred_xgb, nan=np.expm1(y_val.mean()))
 
-                    # ─── ENSEMBLE on original scale ───────────────────────────────────────
+                    # ─── ENSEMBLE on original scale ──────────────────────────────────
                     pred_ens = ensemble_w * pred_tab + (1 - ensemble_w) * pred_xgb
-
-                    # ─── Inverse‐log the “true” y_val before computing metrics ────────────
-                    y_val_orig = np.expm1(y_val)
 
                     # Compute metrics with error handling
                     def safe_metrics(y_true, y_pred):
@@ -277,30 +302,32 @@ def main():
                             print(f"Metrics calculation failed: {e}")
                             return 999, 999, -999
 
-                    # ─── Compute metrics on the ORIGINAL scale ───────────────────────────
+                    # ─── Inverse‐log the “true” y_val for metric calculation ─────────
+                    y_val_orig = np.expm1(y_val)
+
+                    # Compute metrics (unchanged)
                     rmse_t, mae_t, r2_t = safe_metrics(y_val_orig, pred_tab)
                     rmse_x, mae_x, r2_x = safe_metrics(y_val_orig, pred_xgb)
                     rmse_e, mae_e, r2_e = safe_metrics(y_val_orig, pred_ens)
-                    # ─── “TRAIN & PREDICT” BLOCK END ─────────────────────────────────────
 
                     tabnet_scores['rmse'].append(rmse_t)
                     tabnet_scores['mae'].append(mae_t)
                     tabnet_scores['r2'].append(r2_t)
-                    
+
                     xgb_scores['rmse'].append(rmse_x)
                     xgb_scores['mae'].append(mae_x)
                     xgb_scores['r2'].append(r2_x)
-                    
+
                     ens_scores['rmse'].append(rmse_e)
                     ens_scores['mae'].append(mae_e)
                     ens_scores['r2'].append(r2_e)
 
                     print(f"Fold {fold} | TabNet RMSE: {rmse_t:.4f}, XGB RMSE: {rmse_x:.4f}, Ens RMSE: {rmse_e:.4f}")
                     valid_folds += 1
-        
+
                 except Exception as e:
                     print(f"Fold {fold} failed with error: {e}")
-                    continue
+                    continue    
 
             # Compute CV metrics if at least one fold succeeded
             if valid_folds > 0:
@@ -359,9 +386,10 @@ def main():
                 final_xgb_params = json.load(f)
         except FileNotFoundError:
             final_tabnet_params = {
-                'n_d': 32, 'n_a': 32, 'n_steps': 5, 'gamma': 1.3,
-                'lr': 0.02, 'batch_size': 1024, 'virtual_batch_size': 512,
-                'max_epochs': 100, 'patience': 15
+                'n_d': 64, 'n_a': 64, 'n_steps': 7, 'gamma': 2,
+                'lr': 0.02, 'batch_size': 512, 'virtual_batch_size': 256,
+                'max_epochs': 200, 'patience': 20, 'mask_type': 'entmax',
+                'lambda_sparse': 1e-3, 'weight_decay': 1e-5
             }
             final_xgb_params = {
                 'n_estimators': 200, 'max_depth': 8, 'learning_rate': 0.1,
@@ -407,6 +435,8 @@ def main():
         # Invert the “true” test targets
         y_test_orig = np.expm1(y_test)
 
+        y_test_orig = np.round(y_test_orig).astype(int)
+
         # Compute final holdout metrics
         def safe_final_metrics(y_true, y_pred, model_name):
             try:
@@ -440,7 +470,7 @@ def main():
         # Save holdout metrics to CSV
         holdout_df = pd.DataFrame({
             "model": ["TabNet", "XGBoost", "Ensemble"],
-            "rmse":  [rmse_tab_test, r2_xgb_test, r2_ens_test],
+            "rmse":  [rmse_tab_test, rmse_xgb_test, rmse_ens_test],
             "mae":   [mae_tab_test, mae_xgb_test, mae_ens_test],
             "r2":    [r2_tab_test, r2_xgb_test, r2_ens_test]
         })

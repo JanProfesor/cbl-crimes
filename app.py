@@ -3,15 +3,10 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-import xgboost as xg
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler
-from sklearn.model_selection import train_test_split
 import json
 from pathlib import Path
-from model.weighted_tab_xg.data_preparer_noscale import DataPreparerNoLeakage 
 
-
-
+from model.weighted_tab_xg.data_preparer_noscale import DataPreparerNoLeakage
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
@@ -21,13 +16,12 @@ st.sidebar.title("Navigate")
 PAGES = ["About", "Summary Statistics", "Model Overview", "Choropleth Map"]
 selection = st.sidebar.radio("Go to", PAGES)
 
-# Root path (adjust if necessary)
 HERE = Path(__file__).resolve().parent
 PROJECT_ROOT = HERE  # assume app.py lives in project root
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DATA LOADING / CACHING
+# CACHING / DATA LOADING
 # ─────────────────────────────────────────────────────────────────────────────
 
 @st.cache_data
@@ -56,7 +50,7 @@ def load_processed_data():
 @st.cache_data
 def load_prediction_data():
     """
-    Loads test_predictions_final.csv for the Model Overview page,
+    Loads test_predictions_fixed.csv for the Model Overview page,
     then merges on the ward names from Wards_names.csv so that
     each record has a human‐readable 'ward_name'.
     """
@@ -88,46 +82,6 @@ def load_prediction_data():
     return df
 
 
-
-@st.cache_data
-def run_burglary_model():
-    """
-    Re‐runs your XGBoost model on final_dataset.csv and returns a DataFrame
-    with ['ward_code','year','month','predicted_burglary'] for the Choropleth Map page.
-    """
-    # Load full dataset (for training)
-    data_fp = PROJECT_ROOT / "processed" / "final_dataset.csv"
-    df = pd.read_csv(data_fp)
-    df["ward_encoded"] = LabelEncoder().fit_transform(df["ward_code"])
-
-    features = [
-        "ward_encoded", "year", "month", "house_price", "crime_score",
-        "education_score", "employment_score", "environment_score",
-        "health_score", "housing_score", "income_score",
-        "avg_max_temperature", "max_temperature", "min_max_temperature",
-        "max_temperature_std", "avg_min_temperature", "avg_temperature",
-        "total_rainfall", "max_daily_rainfall", "rainfall_std"
-    ]
-    scaler = MinMaxScaler()
-    X = df[features].copy()
-    X[features] = scaler.fit_transform(X)
-    y = df["burglary_count"]
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.3, random_state=42
-    )
-
-    test_info = df.loc[X_test.index, ["ward_code", "year", "month"]].reset_index(drop=True)
-    model = xg.XGBRFRegressor(n_estimators=200, max_depth=12, learning_rate=1)
-    model.fit(X_train, y_train)
-    preds = model.predict(X_test)
-
-    output_df = test_info.copy()
-    output_df["predicted_burglary"] = np.round(preds, 2)
-    output_df["ward_code"] = output_df["ward_code"].astype(str)
-    return output_df
-
-
 @st.cache_data
 def load_geojson():
     """
@@ -139,9 +93,20 @@ def load_geojson():
     return gj
 
 
-# ───────────────────────────────────────────────────────────────────
+@st.cache_data
+def get_train_end_date(csv_path: str, target_col: str):
+    """
+    Returns the exact train_end_date used by DataPreparerNoLeakage.preprocess_split_aware(),
+    so we can color the Model Overview plot correctly (train vs. test).
+    """
+    preparer = DataPreparerNoLeakage(csv_path, target_col)
+    _, _, train_end_date = preparer.preprocess_split_aware()
+    return train_end_date
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PAGE: “About”
-# ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 if selection == "About":
     st.title("About This Dashboard Suite")
 
@@ -185,9 +150,9 @@ if selection == "About":
         """
     )
 
-# ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # PAGE: “Summary Statistics”
-# ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 elif selection == "Summary Statistics":
     df = load_processed_data()
 
@@ -218,10 +183,10 @@ elif selection == "Summary Statistics":
     dff = df.loc[mask].copy()
 
     # 3) KPIs
-    total_burglary = int(dff["burglary_count"].sum())
+    total_burglary    = int(dff["burglary_count"].sum())
     avg_burg_per_ward = dff.groupby("ward_code")["burglary_count"].mean().mean()
-    avg_price = dff["house_price"].mean()
-    avg_crime = dff["crime_score"].mean()
+    avg_price         = dff["house_price"].mean()
+    avg_crime         = dff["crime_score"].mean()
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Residential Burglaries (Selected Period)", f"{total_burglary:,}")
@@ -386,17 +351,14 @@ elif selection == "Summary Statistics":
     st.plotly_chart(fig_ts,      use_container_width=True)
     st.plotly_chart(fig_par,     use_container_width=True)
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE: “Model Overview”
 # ─────────────────────────────────────────────────────────────────────────────
 elif selection == "Model Overview":
     data = load_prediction_data()
-    preparer = DataPreparerNoLeakage("processed/final_dataset_residential_burglary_reordered.csv",
-                                  "burglary_count")
-    _, _, train_end_date = preparer.preprocess_split_aware()
-    # Double‐check that ward_name was populated after merge:
-    # If some codes never matched, you’ll see them here. (Optionally remove this
-    # debug‐print in production.)
+
+    # Double‐check that ward_name was populated after merge
     missing_names = data.loc[data["ward_name"].isna(), "ward_code"].unique().tolist()
     if missing_names:
         st.warning(f"Warning: {len(missing_names)} ward codes missing names (they’ll appear as code–code).")
@@ -404,30 +366,36 @@ elif selection == "Model Overview":
     st.title("Model Performance Dashboard")
     st.markdown("Choose a ward to see actual vs. predicted burglary counts over time.")
 
-    # 1) Create a combined display column:
-    #   If ward_name is missing, fallback to ward_code itself
+    # 1) Recompute train_end_date (cached) so we know where train vs test splits
+    train_end_date = get_train_end_date(
+        PROJECT_ROOT / "processed" / "final_dataset_residential_burglary_reordered.csv",
+        "burglary_count"
+    )
+
+    # 2) Create a combined display column (code + name)
     data["ward_display"] = data["ward_code"] + " – " + data["ward_name"].fillna(data["ward_code"])
 
-    # 2) Build a sorted list of unique display values for the dropdown
+    # 3) Build a sorted list of unique display values for the dropdown
     ward_list = sorted(data["ward_display"].unique())
 
-    # 3) Let the user pick a combined display string
+    # 4) Let the user pick a combined display string
     selected_display = st.selectbox("Select Ward (code – name)", ward_list)
 
-    # 4) Extract the ward_code portion by splitting on " – "
+    # 5) Extract the ward_code portion by splitting on " – "
     selected_code = selected_display.split(" – ")[0]
 
-    # 5) Filter rows where ward_code == selected_code
+    # 6) Filter rows where ward_code == selected_code
     ward_df = data[data["ward_code"] == selected_code].sort_values("date")
 
-    # 6) Show the combined display in the header
+    # 7) Show the combined display in the header
     st.subheader(f"Time Series: {selected_display}")
 
     if ward_df.empty:
         st.write("No data available for this ward.")
     else:
-        # 7) Build a Plotly figure: Actual vs. Ensemble Predicted
         fig = go.Figure()
+
+        # Plot “Actual” in blue
         fig.add_trace(
             go.Scatter(
                 x=ward_df["date"],
@@ -438,21 +406,22 @@ elif selection == "Model Overview":
                 line=dict(color="#1f77b4", width=2),
             )
         )
-        # 2) Ensemble Predicted (TRAIN portion in orange)
+
+        # Plot “Ensemble Predicted (TRAIN)” in orange for dates <= train_end_date
         train_mask = ward_df["date"] <= train_end_date
         if train_mask.any():
             fig.add_trace(
                 go.Scatter(
-                x=ward_df.loc[train_mask, "date"],
-                y=ward_df.loc[train_mask, "pred_ensemble"],
-                mode="lines+markers",
-                name="Ensemble Predicted (Train)",
-                marker=dict(symbol="x", size=6),
-                line=dict(color="orange", width=2),
+                    x=ward_df.loc[train_mask, "date"],
+                    y=ward_df.loc[train_mask, "pred_ensemble"],
+                    mode="lines+markers",
+                    name="Ensemble Predicted (Train)",
+                    marker=dict(symbol="x", size=6),
+                    line=dict(color="orange", width=2),
+                )
             )
-        )
 
-        # 3) Ensemble Predicted (TEST portion in green)
+        # Plot “Ensemble Predicted (TEST)” in green for dates > train_end_date
         test_mask = ward_df["date"] > train_end_date
         if test_mask.any():
             fig.add_trace(
@@ -465,6 +434,7 @@ elif selection == "Model Overview":
                     line=dict(color="green", width=2),
                 )
             )
+
         fig.update_layout(
             title=f"Actual vs. Ensemble Predicted for {selected_display}",
             xaxis_title="Date",
@@ -481,12 +451,12 @@ elif selection == "Model Overview":
             "date", "ward_code", "ward_name", "actual", "pred_tabnet", "pred_xgboost", "pred_ensemble"
         ]].copy()
         metrics_df = metrics_df.rename(columns={
-            "ward_code": "Ward Code",
-            "ward_name": "Ward Name",
-            "actual": "Actual",
-            "pred_tabnet": "TabNet Prediction",
+            "ward_code":    "Ward Code",
+            "ward_name":    "Ward Name",
+            "actual":       "Actual",
+            "pred_tabnet":  "TabNet Prediction",
             "pred_xgboost": "XGBoost Prediction",
-            "pred_ensemble": "Ensemble Prediction"
+            "pred_ensemble":"Ensemble Prediction"
         })
         st.dataframe(metrics_df.set_index("date"), use_container_width=True)
 
@@ -497,10 +467,10 @@ elif selection == "Model Overview":
 elif selection == "Choropleth Map":
     st.title("Predicted Burglary Map")
 
-    # Run model and get predictions
-    results = run_burglary_model()
+    # Load precomputed predictions (from test_predictions_fixed.csv)
+    results = load_prediction_data()
 
-    # Load GeoJSON
+    # Load & cache the geojson
     geojson = load_geojson()
 
     # Build Plotly‐Mapbox choropleth
@@ -509,15 +479,14 @@ elif selection == "Choropleth Map":
         geojson=geojson,
         featureidkey="properties.WD20CD",
         locations="ward_code",
-        color="predicted_burglary",
+        color="pred_ensemble",  # column name for ensemble predictions
         mapbox_style="carto-positron",
         center={"lat": 51.5, "lon": 0.1},
         zoom=10,
         opacity=0.75,
         color_continuous_scale="Reds",
-        labels={"predicted_burglary": "Predicted Burglary Count"},
+        labels={"pred_ensemble": "Predicted Burglary Count"},
     )
     fig_map.update_layout(margin={"r": 0, "t": 0, "l": 0, "b": 0})
 
     st.plotly_chart(fig_map, use_container_width=True)
-
