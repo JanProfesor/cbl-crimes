@@ -25,7 +25,7 @@ class TabNetModel:
             optimizer_params={'lr': params['lr'], 'weight_decay': params.get('weight_decay', 1e-5)},
 
             scheduler_fn=torch.optim.lr_scheduler.ReduceLROnPlateau,
-            scheduler_params={'mode':'min', 'factor':0.5, 'patience':10, 'verbose':False},
+            scheduler_params={'mode':'min', 'factor':0.3, 'patience':5},
 
             momentum=params.get('momentum', 0.3),
             mask_type=params.get('mask_type', 'entmax'),   # switch to entmax

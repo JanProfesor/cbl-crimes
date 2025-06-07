@@ -9,5 +9,9 @@
   "mask_type": "entmax",
   "n_shared": 1,
   "n_independent": 1,
-  "cat_emb_dim": 4
+  "cat_emb_dim": 4,
+  "max_epochs": 200,
+  "patience": 20,
+  "batch_size": 512,
+  "virtual_batch_size": 256
 }
