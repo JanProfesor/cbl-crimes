@@ -1,0 +1,52 @@
+{
+  "summary": {
+    "total_wards": 679,
+    "total_ward_months": 33950,
+    "analysis_months": 50,
+    "avg_predicted_burglaries": 6.12
+  },
+  "risk_distribution": {
+    "Medium": 49.99705449189985,
+    "Low": 25.001472754050074,
+    "High": 13.905743740795288,
+    "Critical": 11.095729013254786
+  },
+  "resource_allocation": {
+    "avg_officers_per_ward": 69.1,
+    "allocation_std_dev": 28.1,
+    "min_allocation": 20.0,
+    "max_allocation": 100.0,
+    "allocation_range_ratio": 5.0
+  },
+  "efficiency_metrics": {
+    "overall_efficiency": 0.611,
+    "prediction_correlation": 0.743,
+    "high_risk_coverage": 0.362,
+    "prevention_efficiency": 0.81,
+    "resource_concentration": 0.407
+  },
+  "special_operations": {
+    "total_operations": 109,
+    "additional_officers_needed": "8138",
+    "avg_operation_duration_weeks": 2.4,
+    "estimated_total_cost_gbp": "863840"
+  },
+  "seasonal_analysis": {
+    "Autumn": {
+      "pred_ensemble": 6.61,
+      "allocated_officers": 68.16
+    },
+    "Spring": {
+      "pred_ensemble": 5.76,
+      "allocated_officers": 69.69
+    },
+    "Summer": {
+      "pred_ensemble": 5.23,
+      "allocated_officers": 68.71
+    },
+    "Winter": {
+      "pred_ensemble": 6.78,
+      "allocated_officers": 69.87
+    }
+  }
+}
