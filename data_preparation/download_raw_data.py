@@ -215,12 +215,12 @@ def download_lsoa_ward():
 
 def main():
     print("Starting raw data download...")
-    # download_weather()
-    # download_house_prices()
-    # download_imd()
+    download_weather()
+    download_house_prices()
+    download_imd()
     download_crime()
-    # download_lsoa_coords()
-    # download_lsoa_ward()
+    download_lsoa_coords()
+    download_lsoa_ward()
     print("All raw data downloaded.")
 
 
