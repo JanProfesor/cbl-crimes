@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>London Police Resource Allocation Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 50%, #16213e 100%);
+            min-height: 100vh;
+            color: #e0e6ed;
+        }
+
+        .dashboard-container {
+            display: grid;
+            grid-template-columns: 320px 1fr;
+            grid-template-rows: auto 1fr;
+            height: 100vh;
+            gap: 20px;
+            padding: 20px;
+        }
+
+        .header {
+            grid-column: 1 / -1;
+            background: rgba(20, 20, 35, 0.95);
+            padding: 25px;
+            border-radius: 20px;
+            backdrop-filter: blur(15px);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .header h1 {
+            color: #64ffda;
+            font-size: 2.8rem;
+            font-weight: bold;
+            margin-bottom: 10px;
+            text-shadow: 0 0 20px rgba(100, 255, 218, 0.3);
+            animation: glow 2s ease-in-out infinite alternate;
+        }
+
+        .header p {
+            color: #8892b0;
+            font-size: 1.2rem;
+        }
+
+        .controls-panel {
+            background: rgba(20, 20, 35, 0.95);
+            padding: 25px;
+            border-radius: 20px;
+            backdrop-filter: blur(15px);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            height: fit-content;
+        }
+
+        .map-container {
+            background: rgba(20, 20, 35, 0.95);
+            border-radius: 20px;
+            overflow: hidden;
+            backdrop-filter: blur(15px);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            position: relative;
+        }
+
+        #map {
+            height: 100%;
+            width: 100%;
+            border-radius: 20px;
+        }
+
+        .control-group {
+            margin-bottom: 25px;
+        }
+
+        .control-group label {
+            display: block;
+            margin-bottom: 10px;
+            font-weight: 600;
+            color: #64ffda;
+            font-size: 1rem;
+            text-shadow: 0 0 10px rgba(100, 255, 218, 0.3);
+        }
+
+        .control-group select,
+        .control-group input {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid rgba(100, 255, 218, 0.3);
+            border-radius: 12px;
+            font-size: 16px;
+            transition: all 0.3s ease;
+            background: rgba(15, 15, 35, 0.8);
+            color: #e0e6ed;
+        }
+
+        .control-group select:focus,
+        .control-group input:focus {
+            outline: none;
+            border-color: #64ffda;
+            box-shadow: 0 0 0 3px rgba(100, 255, 218, 0.2);
+            background: rgba(15, 15, 35, 1);
+        }
+
+        .control-group select option {
+            background: #0f0f23;
+            color: #e0e6ed;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 15px;
+            text-align: center;
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: transform 0.3s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 35px rgba(102, 126, 234, 0.4);
+        }
+
+        .stat-card h3 {
+            font-size: 2.2rem;
+            margin-bottom: 8px;
+            font-weight: bold;
+            text-shadow: 0 0 15px rgba(255, 255, 255, 0.3);
+        }
+
+        .stat-card p {
+            font-size: 0.95rem;
+            opacity: 0.95;
+        }
+
+        .legend {
+            background: rgba(15, 15, 35, 0.8);
+            padding: 20px;
+            border-radius: 15px;
+            margin-top: 20px;
+            border: 1px solid rgba(100, 255, 218, 0.2);
+        }
+
+        .legend h4 {
+            margin-bottom: 15px;
+            color: #64ffda;
+            font-size: 1.1rem;
+            text-shadow: 0 0 10px rgba(100, 255, 218, 0.3);
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+            padding: 5px;
+            border-radius: 8px;
+            transition: background 0.3s ease;
+        }
+
+        .legend-item:hover {
+            background: rgba(100, 255, 218, 0.1);
+        }
+
+        .legend-color {
+            width: 24px;
+            height: 24px;
+            border-radius: 6px;
+            margin-right: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+        }
+
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            z-index: 1000;
+            background: rgba(20, 20, 35, 0.95);
+            padding: 40px;
+            border-radius: 20px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(100, 255, 218, 0.3);
+        }
+
+        .loading.hidden {
+            display: none;
+        }
+
+        .spinner {
+            border: 4px solid rgba(100, 255, 218, 0.3);
+            border-top: 4px solid #64ffda;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        @keyframes glow {
+            from { text-shadow: 0 0 20px rgba(100, 255, 218, 0.3); }
+            to { text-shadow: 0 0 30px rgba(100, 255, 218, 0.5); }
+        }
+
+        .info-panel {
+            position: absolute;
+            bottom: 25px;
+            right: 25px;
+            background: rgba(20, 20, 35, 0.95);
+            padding: 20px;
+            border-radius: 15px;
+            max-width: 280px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            backdrop-filter: blur(15px);
+            border: 1px solid rgba(100, 255, 218, 0.3);
+        }
+
+        .info-panel h4 {
+            margin-bottom: 12px;
+            color: #64ffda;
+            font-size: 1.2rem;
+            text-shadow: 0 0 10px rgba(100, 255, 218, 0.3);
+        }
+
+        .error-message {
+            background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+            color: white;
+            padding: 15px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            display: none;
+            box-shadow: 0 4px 15px rgba(231, 76, 60, 0.3);
+        }
+
+        .success-message {
+            background: linear-gradient(135deg, #27ae60 0%, #229954 100%);
+            color: white;
+            padding: 15px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            display: none;
+            box-shadow: 0 4px 15px rgba(39, 174, 96, 0.3);
+        }
+
+        .refresh-btn {
+            background: linear-gradient(135deg, #64ffda 0%, #4fc3f7 100%);
+            color: #0f0f23;
+            border: none;
+            padding: 15px 25px;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 700;
+            transition: all 0.3s ease;
+            width: 100%;
+            margin-top: 15px;
+            box-shadow: 0 4px 15px rgba(100, 255, 218, 0.3);
+        }
+
+        .refresh-btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(100, 255, 218, 0.4);
+            background: linear-gradient(135deg, #4fc3f7 0%, #64ffda 100%);
+        }
+
+        .time-display {
+            background: rgba(100, 255, 218, 0.1);
+            padding: 20px;
+            border-radius: 15px;
+            text-align: center;
+            margin-bottom: 25px;
+            border: 2px solid rgba(100, 255, 218, 0.3);
+            box-shadow: 0 4px 15px rgba(100, 255, 218, 0.1);
+        }
+
+        .time-display h3 {
+            color: #64ffda;
+            font-size: 1.4rem;
+            margin-bottom: 8px;
+            text-shadow: 0 0 15px rgba(100, 255, 218, 0.3);
+        }
+
+        .time-display p {
+            color: #8892b0;
+            font-size: 0.95rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <div class="header">
+            <h1>🚔 London Police Resource Allocation</h1>
+            <p>Enhanced Adaptive Algorithm - Real-time Officer Deployment Dashboard</p>
+        </div>
+
+        <div class="controls-panel">
+            <div class="error-message" id="errorMessage"></div>
+            <div class="success-message" id="successMessage"></div>
+
+            <div class="time-display">
+                <h3 id="currentPeriod">Select Time Period</h3>
+                <p id="periodDetails">Loading data...</p>
+            </div>
+
+            <div class="control-group">
+                <label for="yearSelect">📅 Year</label>
+                <select id="yearSelect">
+                    <option value="">Loading years...</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label for="monthSelect">📅 Month</label>
+                <select id="monthSelect">
+                    <option value="">Select year first</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <label for="wardFilter">🔍 Ward Filter</label>
+                <input type="text" id="wardFilter" placeholder="Type ward code to search...">
+            </div>
+
+            <button class="refresh-btn" onclick="loadData()">🔄 Refresh Data</button>
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <h3 id="totalWards">---</h3>
+                    <p>Total Wards</p>
+                </div>
+                <div class="stat-card">
+                    <h3 id="totalOfficers">---</h3>
+                    <p>Total Officers</p>
+                </div>
+                <div class="stat-card">
+                    <h3 id="avgOfficers">---</h3>
+                    <p>Avg per Ward</p>
+                </div>
+                <div class="stat-card">
+                    <h3 id="maxOfficers">---</h3>
+                    <p>Maximum</p>
+                </div>
+            </div>
+
+            <div class="legend">
+                <h4>🎨 Officer Allocation Legend</h4>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #64ffda"></div>
+                    <span>80-100 officers</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #e74c3c"></div>
+                    <span>60-79 officers</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #f39c12"></div>
+                    <span>40-59 officers</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #f1c40f"></div>
+                    <span>20-39 officers</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #2ecc71"></div>
+                    <span>1-19 officers</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #95a5a6"></div>
+                    <span>No data</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="map-container">
+            <div class="loading" id="loadingIndicator">
+                <div class="spinner"></div>
+                <p>Loading London wards and allocation data...</p>
+            </div>
+            <div id="map"></div>
+            <div class="info-panel" id="infoPanel" style="display: none;">
+                <h4 id="selectedWard">Ward Information</h4>
+                <p id="wardDetails">Click on a ward to see details</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let map;
+        let allocationData = [];
+        let wardLayers = new L.LayerGroup();
+        let currentYear = null;
+        let currentMonth = null;
+
+        // Initialize map with dark theme
+        function initMap() {
+            map = L.map('map').setView([51.5074, -0.1278], 10);
+            
+            // Dark theme map tiles
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                attribution: '© OpenStreetMap contributors, © CartoDB',
+                subdomains: 'abcd',
+                maxZoom: 19
+            }).addTo(map);
+
+            wardLayers.addTo(map);
+        }
+
+        // Color function for officer allocation
+        function getColor(officers) {
+            if (!officers) return '#95a5a6';
+            if (officers >= 80) return '#64ffda';
+            if (officers >= 60) return '#e74c3c';
+            if (officers >= 40) return '#f39c12';
+            if (officers >= 20) return '#f1c40f';
+            return '#2ecc71';
+        }
+
+        // Load data from Flask API
+        async function loadData() {
+            try {
+                showLoading(true);
+                showMessage('Loading allocation data from server...', 'success');
+
+                const response = await fetch('/api/data');
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const result = await response.json();
+                
+                if (result.error) {
+                    throw new Error(result.error);
+                }
+                
+                allocationData = result.data;
+                
+                console.log(`Loaded ${allocationData.length} allocation records`);
+                console.log('Available columns:', result.columns);
+                
+                populateControls();
+                showMessage(`Successfully loaded ${allocationData.length} records!`, 'success');
+                setTimeout(() => hideMessage(), 3000);
+                
+            } catch (error) {
+                showMessage('Error loading data: ' + error.message, 'error');
+                console.error('Data loading error:', error);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // Populate year and month controls
+        function populateControls() {
+            const years = [...new Set(allocationData.map(row => row.year))].filter(y => y).sort();
+            const yearSelect = document.getElementById('yearSelect');
+            
+            yearSelect.innerHTML = '<option value="">Select a year</option>';
+            years.forEach(year => {
+                const option = document.createElement('option');
+                option.value = year;
+                option.textContent = year;
+                yearSelect.appendChild(option);
+            });
+
+            if (years.length > 0) {
+                currentYear = years[years.length - 1];
+                yearSelect.value = currentYear;
+                populateMonths();
+            }
+        }
+
+        // Populate months based on selected year
+        function populateMonths() {
+            const monthSelect = document.getElementById('monthSelect');
+            const yearData = allocationData.filter(row => row.year == currentYear);
+            const months = [...new Set(yearData.map(row => row.month))].filter(m => m).sort();
+            
+            monthSelect.innerHTML = '<option value="">Select a month</option>';
+            months.forEach(month => {
+                const option = document.createElement('option');
+                option.value = month;
+                option.textContent = new Date(2000, month - 1).toLocaleString('default', { month: 'long' });
+                monthSelect.appendChild(option);
+            });
+
+            if (months.length > 0) {
+                currentMonth = months[months.length - 1];
+                monthSelect.value = currentMonth;
+                updateMap();
+            }
+        }
+
+        // Generate ward polygons
+        function generateWardPolygons(wardCodes) {
+            const polygons = {};
+            const londonBounds = {
+                north: 51.7,
+                south: 51.3,
+                east: 0.3,
+                west: -0.6
+            };
+
+            wardCodes.forEach((code, index) => {
+                const cols = Math.ceil(Math.sqrt(wardCodes.length));
+                const row = Math.floor(index / cols);
+                const col = index % cols;
+                
+                const latStep = (londonBounds.north - londonBounds.south) / Math.ceil(wardCodes.length / cols);
+                const lngStep = (londonBounds.east - londonBounds.west) / cols;
+                
+                const centerLat = londonBounds.south + (row + 0.5) * latStep;
+                const centerLng = londonBounds.west + (col + 0.5) * lngStep;
+                
+                const size = 0.01;
+                polygons[code] = [
+                    [centerLat - size, centerLng - size],
+                    [centerLat - size, centerLng + size],
+                    [centerLat + size, centerLng + size],
+                    [centerLat + size, centerLng - size]
+                ];
+            });
+
+            return polygons;
+        }
+
+        // Update map with current selection
+        function updateMap() {
+            if (!currentYear || !currentMonth) return;
+
+            const filteredData = allocationData.filter(row => 
+                row.year == currentYear && row.month == currentMonth
+            );
+
+            const wardFilter = document.getElementById('wardFilter').value.toLowerCase();
+            const displayData = wardFilter ? 
+                filteredData.filter(row => row.ward_code && row.ward_code.toString().toLowerCase().includes(wardFilter)) : 
+                filteredData;
+
+            wardLayers.clearLayers();
+
+            const wardCodes = [...new Set(displayData.map(row => row.ward_code))].filter(code => code);
+            const wardPolygons = generateWardPolygons(wardCodes);
+
+            displayData.forEach(row => {
+                const polygon = wardPolygons[row.ward_code];
+                if (polygon) {
+                    const officers = Math.round(row.allocated_officers || 0);
+                    const color = getColor(officers);
+                    
+                    const wardPolygon = L.polygon(polygon, {
+                        fillColor: color,
+                        weight: 2,
+                        opacity: 1,
+                        color: '#ffffff',
+                        fillOpacity: 0.8
+                    }).addTo(wardLayers);
+
+                    const popupContent = `
+                        <div style="min-width: 200px; background: #0f0f23; color: #e0e6ed; padding: 10px; border-radius: 8px;">
+                            <h3 style="color: #64ffda; margin-bottom: 10px;">Ward ${row.ward_code}</h3>
+                            <p><strong>Allocated Officers:</strong> ${officers}</p>
+                            <p><strong>Predicted Burglaries:</strong> ${(row.burglary_count || 0).toFixed(1)}</p>
+                            <p><strong>Risk Category:</strong> ${row.risk_category || 'N/A'}</p>
+                            <p><strong>Season:</strong> ${row.season || 'N/A'}</p>
+                            <p><strong>Risk Score:</strong> ${(row.adaptive_risk_score || 0).toFixed(3)}</p>
+                        </div>
+                    `;
+                    wardPolygon.bindPopup(popupContent);
+
+                    wardPolygon.on('click', function() {
+                        showWardInfo(row);
+                    });
+                }
+            });
+
+            updateStatistics(displayData);
+            updateTimeDisplay();
+        }
+
+        // Show ward information
+        function showWardInfo(wardData) {
+            const infoPanel = document.getElementById('infoPanel');
+            const selectedWard = document.getElementById('selectedWard');
+            const wardDetails = document.getElementById('wardDetails');
+
+            selectedWard.textContent = `Ward ${wardData.ward_code}`;
+            wardDetails.innerHTML = `
+                <strong>👮 Officers:</strong> ${Math.round(wardData.allocated_officers || 0)}<br>
+                <strong>🎯 Predicted Crime:</strong> ${(wardData.burglary_count || 0).toFixed(1)}<br>
+                <strong>⚠️ Risk Level:</strong> ${wardData.risk_category || 'N/A'}<br>
+                <strong>📊 Risk Score:</strong> ${(wardData.adaptive_risk_score || 0).toFixed(3)}<br>
+                <strong>🌍 Season:</strong> ${wardData.season || 'N/A'}
+            `;
+
+            infoPanel.style.display = 'block';
+        }
+
+        // Update statistics
+        function updateStatistics(data) {
+            const totalWards = data.length;
+            const totalOfficers = data.reduce((sum, row) => sum + (row.allocated_officers || 0), 0);
+            const avgOfficers = totalWards > 0 ? totalOfficers / totalWards : 0;
+            const maxOfficers = Math.max(...data.map(row => row.allocated_officers || 0));
+
+            document.getElementById('totalWards').textContent = totalWards;
+            document.getElementById('totalOfficers').textContent = Math.round(totalOfficers);
+            document.getElementById('avgOfficers').textContent = avgOfficers.toFixed(1);
+            document.getElementById('maxOfficers').textContent = Math.round(maxOfficers);
+        }
+
+        // Update time display
+        function updateTimeDisplay() {
+            const currentPeriod = document.getElementById('currentPeriod');
+            const periodDetails = document.getElementById('periodDetails');
+
+            if (currentYear && currentMonth) {
+                const monthName = new Date(currentYear, currentMonth - 1).toLocaleString('default', { month: 'long' });
+                currentPeriod.textContent = `${monthName} ${currentYear}`;
+                
+                const filteredData = allocationData.filter(row => 
+                    row.year == currentYear && row.month == currentMonth
+                );
+                periodDetails.textContent = `${filteredData.length} wards with data`;
+            }
+        }
+
+        // Utility functions
+        function showLoading(show) {
+            const loading = document.getElementById('loadingIndicator');
+            if (show) {
+                loading.classList.remove('hidden');
+            } else {
+                loading.classList.add('hidden');
+            }
+        }
+
+        function showMessage(message, type) {
+            hideMessage();
+            
+            const messageEl = document.getElementById(type === 'error' ? 'errorMessage' : 'successMessage');
+            messageEl.textContent = message;
+            messageEl.style.display = 'block';
+        }
+
+        function hideMessage() {
+            document.getElementById('errorMessage').style.display = 'none';
+            document.getElementById('successMessage').style.display = 'none';
+        }
+
+        // Event listeners
+        document.getElementById('yearSelect').addEventListener('change', function() {
+            currentYear = this.value;
+            if (currentYear) {
+                populateMonths();
+            }
+        });
+
+        document.getElementById('monthSelect').addEventListener('change', function() {
+            currentMonth = this.value;
+            if (currentMonth) {
+                updateMap();
+            }
+        });
+
+        document.getElementById('wardFilter').addEventListener('input', function() {
+            updateMap();
+        });
+
+        // Initialize dashboard
+        document.addEventListener('DOMContentLoaded', function() {
+            initMap();
+            loadData();
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+{
+  "summary": {
+    "total_wards": 679,
+    "analysis_months": 168,
+    "avg_predicted_burglaries": 8.27,
+    "algorithm_type": "Enhanced Adaptive"
+  },
+  "allocation_performance": {
+    "avg_officers_per_ward": 73.9,
+    "allocation_range": "30.0 - 100.0",
+    "allocation_correlation": 0.691,
+    "resource_efficiency": 0.112,
+    "high_risk_coverage": 0.064,
+    "prevention_efficiency": 0.882,
+    "enhanced_efficiency_score": 0.412
+  },
+  "adaptive_features": {
+    "surge_capacity_used": "0.0% of periods",
+    "total_surge_activations": 0,
+    "allocation_flexibility": 2.54,
+    "dynamic_risk_categories": 5
+  },
+  "risk_distribution": {
+    "Low": 27.944631460831754,
+    "Medium-Low": 25.184970895574725,
+    "Medium-High": 24.109334455431657,
+    "High": 12.5394487691984,
+    "Critical": 10.221614418963462
+  },
+  "seasonal_analysis": {
+    "burglary_count": {
+      "Autumn": 8.45,
+      "Spring": 8.017,
+      "Summer": 7.743,
+      "Winter": 8.852
+    },
+    "allocated_officers": {
+      "Autumn": 74.755,
+      "Spring": 73.123,
+      "Summer": 72.259,
+      "Winter": 75.334
+    },
+    "adaptive_risk_score": {
+      "Autumn": 0.364,
+      "Spring": 0.293,
+      "Summer": 0.28,
+      "Winter": 0.399
+    }
+  }
+}

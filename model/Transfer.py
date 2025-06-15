@@ -1,10 +1,31 @@
 import xgboost as xgb
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import numpy as np
+import pandas as pd
 
-# preprocessing right skewed data
-y_uk = np.log1p(y_uk)        # log(1 + x) handles 0s well
-y_london = np.log1p(y_london)
+uk_data = pd.read_csv(r"C:\Users\rinsk\OneDrive\Documents\Uni\Data Challenge 2\ward_non_london.csv")
+london_data = pd.read_csv(r"C:\Users\rinsk\OneDrive\Documents\Uni\Data Challenge 2\ward_london.csv")
+
+# the features to predict the target
+features = ['tmax', 'tmin', 'af', 'rain', 'sun', 'crime',
+            'education', 'employment', 'environment', 'health',
+            'housing', 'income', 'burglary_count_lag1', 'house_price']
+target = 'burglary_count'
+
+# splitting data for UK (without London)
+X_uk = uk_data[features]
+y_uk = np.log1p(uk_data[target])  # log-transform
+
+# London
+from sklearn.model_selection import train_test_split
+X_london = london_data[features]
+y_london = np.log1p(london_data[target])  # log-transform
+
+# train/test split for evaluation
+X_london_train, X_london_test, y_london_train, y_london_test = train_test_split(
+    X_london, y_london, test_size=0.3, random_state=42
+)
+
 
 # define class
 class XGBoostCrimeCountModel:
@@ -54,7 +75,7 @@ model = XGBoostCrimeCountModel()
 model.train_uk(X_uk, y_uk, num_boost_round=150)
 
 # fine-tune on London
-model.fine_tune_london(X_london, y_london, num_boost_round=50)
+model.fine_tune_london(X_london_train, y_london_train, num_boost_round=50)
 
 # predictions
 y_pred_log = model.predict(X_london_test)    # still in log scale
@@ -72,6 +93,7 @@ def evaluate_predictions(y_true, y_pred):
     print(f"MSE : {mse:.2f}")
     print(f"R²  : {r2:.4f}")
     return rmse, mae, mse, r2
+evaluate_predictions(y_true, y_pred)
 
 # feature importance
 importances = model.feature_importances()

@@ -1,0 +1,17 @@
+{
+  "n_d": 68,
+  "n_a": 106,
+  "n_steps": 3,
+  "gamma": 1.5124138796375053,
+  "lambda_sparse": 0.00023446597538534468,
+  "lr": 0.009958530123135629,
+  "weight_decay": 0.0038536694267172376,
+  "mask_type": "entmax",
+  "n_shared": 1,
+  "n_independent": 1,
+  "cat_emb_dim": 4,
+  "max_epochs": 200,
+  "patience": 20,
+  "batch_size": 512,
+  "virtual_batch_size": 256
+}
