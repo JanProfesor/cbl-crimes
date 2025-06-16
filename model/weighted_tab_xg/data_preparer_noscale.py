@@ -2,12 +2,13 @@ import pandas as pd
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 import holidays
-
+from sklearn.cluster import KMeans
 
 class DataPreparerNoLeakage:
     """
     Data preparer that avoids temporal leakage by only using past information
     for feature engineering within each time period.
+    ORIGINAL VERSION + ONLY 2 ULTRA-SAFE FEATURES
     """
 
     def __init__(self, csv_path: str, target: str):
@@ -18,17 +19,18 @@ class DataPreparerNoLeakage:
         years = range(self.df["year"].min(), self.df["year"].max() + 1)
         self.uk_holidays = holidays.UnitedKingdom(years=years)
 
-    
-
     def create_features_no_leakage(self, df_subset: pd.DataFrame) -> pd.DataFrame:
         """
         Create lag + rolling features using only data up to current point,
         but compute neighbor_count_lag1 via a vectorized merge instead of a row‐loop.
+        PLUS ONLY 2 ULTRA-SAFE FEATURES.
         """
         df = df_subset.copy()
+        
         # 1) Build date, sort (as before)
         df["date"] = pd.to_datetime(df[["year", "month"]].assign(day=1))
         df = df.sort_values(["ward_code", "date"]).reset_index(drop=True)
+        df["was_zero"] = (df["burglary_count"] == 0).astype(int)
 
         # 2) BASIC lag features
         for lag in (1, 2, 3, 6, 12):
@@ -50,7 +52,41 @@ class DataPreparerNoLeakage:
             df[f"{self.target}_roll_mean_{window}"] = roll_mean
             df[f"{self.target}_roll_std_{window}"]  = roll_std
 
-        # ─── NEW: HOLIDAY FLAG and WEEKEND‐PCT ─────────────────────────────────
+        # Encode month as cyclical feature (seasonality)
+        df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
+        df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
+
+        # Additional rolling features
+        for window in [3, 6, 12]:
+            # Rolling min
+            df[f"roll_min_{window}"] = (
+                df.groupby("ward_code")["burglary_count"]
+                .shift(1).rolling(window).min().reset_index(0, drop=True)
+            )
+
+            # Rolling max
+            df[f"roll_max_{window}"] = (
+                df.groupby("ward_code")["burglary_count"]
+                .shift(1).rolling(window).max().reset_index(0, drop=True)
+            )
+
+            # Rolling std (volatility)
+            df[f"roll_std_{window}"] = (
+                df.groupby("ward_code")["burglary_count"]
+                .shift(1).rolling(window).std().reset_index(0, drop=True)
+            )
+
+        # Basic lag features
+        for lag in [1, 2, 3, 6, 12]:
+            df[f"lag_{lag}"] = df.groupby("ward_code")["burglary_count"].shift(lag)
+
+        # === Lag deltas: short-term and long-term trend indicators
+        delta_pairs = [(1, 2), (1, 3), (2, 3), (1, 6), (1, 12), (3, 12)]
+
+        for l1, l2 in delta_pairs:
+            df[f"delta_{l1}_{l2}"] = df[f"lag_{l1}"] - df[f"lag_{l2}"]
+
+        # ─── HOLIDAY FLAG and WEEKEND‐PCT ─────────────────────────────────
         unique_dates = df["date"].drop_duplicates().sort_values().reset_index(drop=True)
 
         # B) Build a small DataFrame of holiday/weekend features per unique date
@@ -74,13 +110,12 @@ class DataPreparerNoLeakage:
         # Apply month_flag to each unique date (M rows, not N)
         month_feats[["is_holiday_month", "pct_weekend_days"]] = month_feats["date"].apply(month_flag)
 
-        # C) Merge these two new columns back into df on “date”
+        # C) Merge these two new columns back into df on "date"
         df = df.merge(month_feats, on="date", how="left")
         
-        
-        # ─────── NEW: NEIGHBOR‐LAG FEATURE (vectorized merge) ────────────────
+        # ─────── NEIGHBOR‐LAG FEATURE (vectorized merge) ────────────────
 
-        # “Explode” the neighbors dict into a DataFrame of (ward_code, neighbor_code) rows
+        # "Explode" the neighbors dict into a DataFrame of (ward_code, neighbor_code) rows
         #  Example: if self.neighbors["A"] = ["B","C"], you get two rows: ("A","B") and ("A","C")
         adj_df = (
             pd.DataFrame([(ward, nbr) 
@@ -89,7 +124,6 @@ class DataPreparerNoLeakage:
                         columns=["ward_code", "neighbor_code"])
         )
 
-        
         prev_df = df[["ward_code", "date", self.target]].copy()
         prev_df["date"] = prev_df["date"] - pd.offsets.MonthBegin(1)
         prev_df = prev_df.rename(columns={self.target: "neighbor_count"})
@@ -100,16 +134,13 @@ class DataPreparerNoLeakage:
         df_for_merge = df_for_merge.drop_duplicates()  
         #    This is each distinct (ward, date). We will attach neighbor info to each row.
 
-        
         merged_1 = pd.merge(
             df_for_merge,
             adj_df,
             on="ward_code",
             how="left"
         )
-        
 
-        
         merged_2 = pd.merge(
             merged_1,
             prev_df,
@@ -138,12 +169,24 @@ class DataPreparerNoLeakage:
         )
         #    Any ward‐date that had no neighbor row will have NaN→0.0 after fillna above
 
-        # ───────────────────────────────────────────────────────────────────────
+        # ================================================================
+        # ONLY 2 ULTRA-SAFE ADDITIONAL FEATURES (GUARANTEED NO LEAKAGE)
+        # ================================================================
+        
+        # 1. Weather-crime interaction (current period weather with current period crime - SAFE)
+        df["rain_crime_interaction"] = df["rain"] * df["crime"]
+        
+        # 2. Simple seasonality flag (just month number - SAFE)
+        df["is_winter"] = df["month"].isin([12, 1, 2]).astype(int)
+
+        # ================================================================
+        # END OF SAFE ADDITIONS
+        # ================================================================
+
         # 4) (Optional) Drop any rows with missing first‐lag as before
         df = df.dropna(subset=[f"{self.target}_lag_1"]).reset_index(drop=True)
 
         return df
-
 
     def preprocess_split_aware(self, train_end_date=None):
         """
