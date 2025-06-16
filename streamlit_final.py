@@ -11,6 +11,9 @@ from datetime import datetime, timedelta
 import folium
 from streamlit_folium import st_folium
 from shapely.geometry import shape
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 # Page configuration
 st.set_page_config(
@@ -79,6 +82,22 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+@st.cache_data
+def load_ward_boundaries():
+    """Load ward boundaries from local GeoJSON (using WD24CD)"""
+    geojson_path = PROJECT_ROOT/"data_preparation" / "Wards_May_2024.geojson"
+    try:
+        with open(geojson_path, "r", encoding="utf-8") as f:
+            gj = json.load(f)
+        # Verify WD24CD exists
+        props = gj["features"][0]["properties"]
+        if "WD24CD" not in props:
+            st.error(f"❌ WD24CD not found in GeoJSON properties: {list(props.keys())}")
+            return None
+        return gj
+    except Exception as e:
+        st.error(f"❌ Failed to load local ward boundaries: {e}")
+        return None
 
 # Initialize session state
 if 'data_loaded' not in st.session_state:
@@ -89,6 +108,16 @@ if 'prediction_data' not in st.session_state:
     st.session_state.prediction_data = None
 if 'ward_boundaries' not in st.session_state:
     st.session_state.ward_boundaries = None
+
+# once we've loaded the geojson, build a ward_code → ward_name map
+if st.session_state.ward_boundaries is None:
+    st.session_state.ward_boundaries = load_ward_boundaries()
+
+if st.session_state.ward_boundaries:
+    st.session_state.ward_name_map = {
+        feat["properties"]["WD24CD"]: feat["properties"]["WD24NM"]
+        for feat in st.session_state.ward_boundaries["features"]
+    }
 
 @st.cache_data
 def load_csv_data():
@@ -130,44 +159,22 @@ def load_csv_data():
     
     return allocation_data, prediction_data
 
-@st.cache_data
-def load_ward_boundaries():
-    """Load ward boundaries from ArcGIS service"""
-    try:
-        url = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Wards_May_2024_Boundaries_UK_BSC/FeatureServer/0/query?outFields=*&where=1%3D1&f=geojson"
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        st.error(f"❌ Failed to load ward boundaries: {e}")
-        return None
-    
+
+
+
 @st.cache_data
 def get_ward_centroids(ward_geojson: dict) -> dict:
     """
-    Returns a dict mapping ward_code -> (lat, lon) centroid.
-    Auto-detects the ward code field by finding any key ending in 'CD'.
+    Returns a dict mapping ward_code (WD24CD) -> (lat, lon) centroid.
     """
+    from shapely.geometry import shape
+
     centroids = {}
-
-    # Look at the first feature's properties
-    sample_props = ward_geojson["features"][0]["properties"]
-    # Find a key that ends with 'CD' (case-insensitive)
-    id_field = next(
-        (k for k in sample_props.keys() if k.lower().endswith("cd")),
-        None
-    )
-    if id_field is None:
-        st.error(f"❌ Could not find a ward code field in GeoJSON. Keys: {list(sample_props.keys())}")
-        return {}
-
-    # Build centroids map
     for feat in ward_geojson["features"]:
-        code = feat["properties"][id_field]
+        code = feat["properties"]["WD24CD"]
         poly = shape(feat["geometry"])
         lon, lat = poly.centroid.coords[0]
         centroids[code] = (lat, lon)
-
     return centroids
 
 
@@ -433,7 +440,7 @@ def create_map(allocation_df, ward_boundaries=None, map_type="Crime Hotspots"):
     if map_type == "Officer Allocation":
         # ── 1) Get the ward ID field ───────────────────────────
         sample = ward_boundaries["features"][0]["properties"]
-        id_field = next(k for k in sample if k.lower().endswith("cd"))
+        id_field = "WD24CD"
         
         # ── 2) Build a full list of ward_codes from the geojson ─
         all_codes = [feat["properties"][id_field] for feat in ward_boundaries["features"]]
@@ -544,6 +551,11 @@ def main():
     if not st.session_state.data_loaded:
         with st.spinner("Loading data..."):
             allocation_df, prediction_df = load_csv_data()
+            if allocation_df is not None:
+                allocation_df["ward_name"] = allocation_df["ward_code"].map(st.session_state.ward_name_map)
+
+            if prediction_df is not None:
+                prediction_df["ward_name"] = prediction_df["ward_code"].map(st.session_state.ward_name_map)
             
             # If no real data, generate mock data
             if allocation_df is None and prediction_df is None:
@@ -793,13 +805,18 @@ def predictions_screen(allocation_df, prediction_df):
         return
     
     # Ward selection
-    wards = sorted(prediction_df['ward_code'].unique())
-    selected_ward = st.selectbox("Select Ward for Analysis", wards)
-    
-    if selected_ward:
+    options = [
+        f"{code} – {st.session_state.ward_name_map.get(code, '')}"
+        for code in sorted(prediction_df['ward_code'].unique())
+    ]
+    selected = st.selectbox("Select Ward for Analysis", options)
+    # split back to code only for downstream filtering:
+    selected_code = selected.split(" – ")[0]
+
+    if selected_code:
         # Ward statistics
-        ward_data = prediction_df[prediction_df['ward_code'] == selected_ward]
-        
+        ward_data = prediction_df[prediction_df['ward_code'] == selected_code]
+
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
@@ -819,12 +836,12 @@ def predictions_screen(allocation_df, prediction_df):
             st.metric("Accuracy", f"{accuracy:.1f}%")
         
         # Prediction chart
-        fig = create_prediction_chart(prediction_df, selected_ward)
+        fig = create_prediction_chart(prediction_df, selected_code)
         if fig:
             st.plotly_chart(fig, use_container_width=True)
         
         # Ward details
-        st.subheader(f"📊 Ward {selected_ward} Details")
+        st.subheader(f"📊 Ward {selected_code} Details")
         st.write(f"**Total Records:** {len(ward_data)}")
         
         if 'year' in ward_data.columns:
@@ -942,6 +959,7 @@ def map_screen(allocation_df):
     if st.session_state.ward_boundaries is None:
         st.session_state.ward_boundaries = load_ward_boundaries()
     ward_boundaries = st.session_state.ward_boundaries
+
     
     # 3️⃣ Sidebar/map controls
     if 'map_filters' not in st.session_state:
@@ -1191,6 +1209,11 @@ def main():
     if not st.session_state.data_loaded:
         with st.spinner("Loading data..."):
             allocation_df, prediction_df = load_csv_data()
+            if allocation_df is not None:
+                allocation_df["ward_name"] = allocation_df["ward_code"].map(st.session_state.ward_name_map)
+
+            if prediction_df is not None:
+                prediction_df["ward_name"] = prediction_df["ward_code"].map(st.session_state.ward_name_map)
             
             # If no real data, generate mock data
             if allocation_df is None and prediction_df is None:
