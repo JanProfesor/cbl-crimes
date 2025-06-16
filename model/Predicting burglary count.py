@@ -2,11 +2,30 @@ import xgboost as xgb
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
-# preprocessing right skewed data
-y_uk = np.log1p(y_uk)        # log(1 + x) handles 0s well
-y_london = np.log1p(y_london)
+uk_data = pd.read_csv(r"C:\Users\rinsk\OneDrive\Documents\Uni\Data Challenge 2\ward_non_london.csv")
+london_data = pd.read_csv(r"C:\Users\rinsk\OneDrive\Documents\Uni\Data Challenge 2\ward_london.csv")
+
+# the features to predict the target
+features = ['tmax', 'tmin', 'af', 'rain', 'sun', 'crime',
+            'education', 'employment', 'environment', 'health',
+            'housing', 'income', 'burglary_count_lag1', 'house_price']
+target = 'burglary_count'
+
+# splitting data for UK (without London)
+X_uk = uk_data[features]
+y_uk = np.log1p(uk_data[target])  # log-transform
+
+# London
+from sklearn.model_selection import train_test_split
+X_london = london_data[features]
+y_london = np.log1p(london_data[target])  # log-transform
+
+# train/test split for evaluation
+X_london_train, X_london_test, y_london_train, y_london_test = train_test_split(
+    X_london, y_london, test_size=0.3, random_state=42
+)
+
 
 # define class
 class XGBoostCrimeCountModel:
@@ -51,56 +70,12 @@ class XGBoostCrimeCountModel:
             raise ValueError("Model not trained.")
         return self.final_model.get_score(importance_type='gain')
 
-    def forecast_future(self, last_known_df, steps=12, target_col='Burglary Count'):
-        """
-        Forecast future burglary counts using autoregression.
-        - last_known_df: DataFrame with latest known features & target (must have lag columns).
-        - steps: number of future months to forecast
-        - target_col: original target column name (for inverse transform)
-        """
-        future_preds = []
-        current_df = last_known_df.copy()
-
-        for _ in range(steps):
-            dmatrix = xgb.DMatrix(current_df.drop(columns=[target_col]))
-            pred_log = self.final_model.predict(dmatrix)[0]
-            pred = np.expm1(pred_log)
-            future_preds.append(pred)
-
-            # update lags: shift lag_1 to lag_2, etc.
-            for i in reversed(range(2, 13)):
-                current_df[f'lag_{i}'] = current_df[f'lag_{i - 1}']
-            current_df['lag_1'] = pred_log  # keep in log scale for next input
-
-            # update rolling features
-            if 'rolling_3' in current_df.columns:
-                last_lags = [current_df[f'lag_{i}'].values[0] for i in range(1, 4)]
-                current_df['rolling_3'] = sum(last_lags) / 3
-            if 'rolling_6' in current_df.columns:
-                last_lags = [current_df[f'lag_{i}'].values[0] for i in range(1, 7)]
-                current_df['rolling_6'] = sum(last_lags) / 6
-
-            # advance date features
-            current_month = current_df['month'].values[0]
-            current_year = current_df['year'].values[0]
-            next_month = current_month + 1
-            next_year = current_year
-            if next_month > 12:
-                next_month = 1
-                next_year += 1
-
-            current_df['month'] = next_month
-            current_df['year'] = next_year
-            current_df['quarter'] = (next_month - 1) // 3 + 1
-
-        return future_preds
-
 # train on UK
 model = XGBoostCrimeCountModel()
 model.train_uk(X_uk, y_uk, num_boost_round=150)
 
 # fine-tune on London
-model.fine_tune_london(X_london, y_london, num_boost_round=50)
+model.fine_tune_london(X_london_train, y_london_train, num_boost_round=50)
 
 # predictions
 y_pred_log = model.predict(X_london_test)    # still in log scale
@@ -118,7 +93,6 @@ def evaluate_predictions(y_true, y_pred):
     print(f"MSE : {mse:.2f}")
     print(f"R²  : {r2:.4f}")
     return rmse, mae, mse, r2
-
 evaluate_predictions(y_true, y_pred)
 
 # feature importance
@@ -129,7 +103,7 @@ for feature, score in sorted(importances.items(), key=lambda x: x[1], reverse=Tr
 
 # save and load
 model.final_model.save_model("XGBoost_model.json")
-loaded_model = xgb.Booster()
+loaded_model=xgb.Booster()
 loaded_model.load_model("XGBoost_model.json")
 
 # future forecasting
