@@ -106,13 +106,29 @@ model.final_model.save_model("XGBoost_model.json")
 loaded_model=xgb.Booster()
 loaded_model.load_model("XGBoost_model.json")
 
-# future forecasting
-target_col = 'Burglary Count'
-last_known = X_london_test.copy()
-last_known[target_col] = np.log1p(y_london_test.values)  # dummy target col
-last_known_df = last_known.iloc[[-1]]  # last known row
 
-future_forecasts = model.forecast_future(last_known_df, steps=12)
+
+
+# future forecasting
+# Get the last row of test data as starting point
+last_known = X_london_test.copy()
+last_known['burglary_count'] = np.log1p(y_london_test.values)
+last_known_df = last_known.iloc[[-1]].copy()
+
+future_forecasts = []
+current_input = last_known_df.copy()
+
+for step in range(12):
+    # Predict log1p burglary count
+    dmatrix = xgb.DMatrix(current_input[model.feature_columns])
+    log_pred = model.final_model.predict(dmatrix)[0]
+
+    # Convert back to normal scale
+    predicted_count = np.expm1(log_pred)
+    future_forecasts.append(predicted_count)
+
+    current_input['burglary_count_lag1'] = log_pred
+
 
 # Display
 print("\nFuture Monthly Burglary Predictions:")
