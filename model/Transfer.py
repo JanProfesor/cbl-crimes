@@ -3,8 +3,8 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import numpy as np
 import pandas as pd
 
-uk_data = pd.read_csv(r"C:\Users\rinsk\OneDrive\Documents\Uni\Data Challenge 2\ward_non_london.csv")
-london_data = pd.read_csv(r"C:\Users\rinsk\OneDrive\Documents\Uni\Data Challenge 2\ward_london.csv")
+uk_data = pd.read_csv('data_file_uk')
+london_data = pd.read_csv('data_file_london')
 
 # the features to predict the target
 features = ['tmax', 'tmin', 'af', 'rain', 'sun', 'crime',
