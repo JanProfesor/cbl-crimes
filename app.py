@@ -1,492 +1,485 @@
-import streamlit as st
+from flask import Flask, render_template, jsonify, request
 import pandas as pd
 import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
 import json
+import os
 from pathlib import Path
+import requests
+from functools import lru_cache
 
-from model.weighted_tab_xg.data_preparer_noscale import DataPreparerNoLeakage
+app = Flask(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CONFIG
-# ─────────────────────────────────────────────────────────────────────────────
-st.set_page_config(layout="wide")
-st.sidebar.title("Navigate")
-PAGES = ["About", "Summary Statistics", "Model Overview", "Choropleth Map"]
-selection = st.sidebar.radio("Go to", PAGES)
+# Global variables for data storage
+allocation_data = None
+prediction_data = None
+geojson_cache = None
 
-HERE = Path(__file__).resolve().parent
-PROJECT_ROOT = HERE  # assume app.py lives in project root
+# ✅ NEW: ArcGIS GeoJSON URL
+GEOJSON_URL = "https://services1.arcgis.com/ESMARspQHYMw9BZ9/arcgis/rest/services/Wards_May_2024_Boundaries_UK_BSC/FeatureServer/0/query?outFields=*&where=1%3D1&f=geojson"
 
+@lru_cache(maxsize=1)
+def fetch_geojson():
+    """Fetch and cache GeoJSON data from ArcGIS service"""
+    global geojson_cache
+    
+    if geojson_cache is not None:
+        return geojson_cache
+    
+    try:
+        print("🗺️ Fetching GeoJSON from ArcGIS service...")
+        response = requests.get(GEOJSON_URL, timeout=30)
+        response.raise_for_status()
+        
+        geojson_data = response.json()
+        geojson_cache = geojson_data
+        
+        print(f"✅ GeoJSON loaded: {len(geojson_data.get('features', []))} features")
+        
+        # Print sample feature to understand structure
+        if geojson_data.get('features'):
+            sample_feature = geojson_data['features'][0]
+            print(f"📋 Sample feature properties: {list(sample_feature.get('properties', {}).keys())}")
+        
+        return geojson_data
+        
+    except requests.RequestException as e:
+        print(f"❌ Error fetching GeoJSON: {e}")
+        return None
+    except Exception as e:
+        print(f"❌ Error processing GeoJSON: {e}")
+        return None
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CACHING / DATA LOADING
-# ─────────────────────────────────────────────────────────────────────────────
+def safe_read_csv(filepath, **kwargs):
+    """Safely read CSV with proper encoding handling"""
+    print(f"📁 Attempting to load: {filepath}")
+    
+    if not os.path.exists(filepath):
+        print(f"❌ File not found: {filepath}")
+        return None
+    
+    encodings = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252', 'iso-8859-1']
+    
+    for encoding in encodings:
+        try:
+            print(f"   Trying encoding: {encoding}")
+            df = pd.read_csv(filepath, encoding=encoding, **kwargs)
+            print(f"   ✅ Successfully loaded with {encoding} encoding")
+            print(f"   📊 Shape: {df.shape}")
+            return df
+        except UnicodeDecodeError:
+            print(f"   ❌ Failed with {encoding} encoding")
+            continue
+        except Exception as e:
+            print(f"   ❌ Error with {encoding}: {e}")
+            continue
+    
+    print(f"❌ Could not read {filepath} with any supported encoding")
+    return None
 
-@st.cache_data
-def load_processed_data():
-    """
-    Loads final_dataset_residential_burglary.csv, merges ward names,
-    and computes a 'date' column.
-    Returns a DataFrame with all the fields needed for summary stats & dashboard.
-    """
-    data_fp = PROJECT_ROOT / "processed" / "final_dataset_residential_burglary.csv"
-    df = pd.read_csv(data_fp)
-    df["date"] = pd.to_datetime(df[["year", "month"]].assign(day=1))
-
-    # Load ward lookup
-    lookup_fp = PROJECT_ROOT / "data_preparation" / "z_old" / "lsoa_to_ward_lookup_2020.csv"
-    lookup = pd.read_csv(lookup_fp)
-    ward_lookup = (
-        lookup[["WD20CD", "WD20NM"]]
-        .drop_duplicates()
-        .rename(columns={"WD20CD": "ward_code", "WD20NM": "ward_name"})
-    )
-    df = df.merge(ward_lookup, on="ward_code", how="left")
-    return df
-
-
-@st.cache_data
-def load_prediction_data():
-    """
-    Loads test_predictions_fixed.csv for the Model Overview page,
-    then merges on the ward names from Wards_names.csv so that
-    each record has a human‐readable 'ward_name'.
-    """
-    # 1) Load the raw predictions CSV
-    data_fp = PROJECT_ROOT / "test_predictions_fixed.csv"
-    df = pd.read_csv(data_fp)
-
-    # 2) If it only has a numeric 'ward' column, rename it to ward_code
-    if "ward" in df.columns and "ward_name" not in df.columns:
-        df = df.rename(columns={"ward": "ward_code"})
-    elif "ward_code" not in df.columns:
-        st.error("Expected a 'ward' or 'ward_code' column in test_predictions_fixed.csv")
-        return pd.DataFrame()  # return empty if something is wrong
-
-    # 3) Load the ward‐lookup CSV (Wards_names.csv) from data_preparation/z_old
-    lookup_fp = PROJECT_ROOT / "data_preparation" / "z_old" / "Wards_names.csv"
-    lookup = pd.read_csv(lookup_fp)
-    # Make sure the lookup columns match:
-    #   WD23CD = ward code, WD23NM = ward name
-    lookup = lookup.rename(columns={"WD23CD": "ward_code", "WD23NM": "ward_name"})
-    lookup = lookup[["ward_code", "ward_name"]].drop_duplicates()
-
-    # 4) Merge the lookup into your predictions DataFrame
-    df = df.merge(lookup, on="ward_code", how="left")
-
-    # 5) Create a datetime column for filtering and plotting
-    df["date"] = pd.to_datetime(df[["year", "month"]].assign(day=1))
-
-    return df
-
-
-@st.cache_data
-def load_geojson():
-    """
-    Loads the GeoJSON file for London wards.
-    """
-    geojson_fp = PROJECT_ROOT / "data_preparation" / "z_old" / "wards_2020_bsc_wgs84.geojson"
-    with open(geojson_fp, "r") as f:
-        gj = json.load(f)
-    return gj
-
-
-@st.cache_data
-def get_train_end_date(csv_path: str, target_col: str):
-    """
-    Returns the exact train_end_date used by DataPreparerNoLeakage.preprocess_split_aware(),
-    so we can color the Model Overview plot correctly (train vs. test).
-    """
-    preparer = DataPreparerNoLeakage(csv_path, target_col)
-    _, _, train_end_date = preparer.preprocess_split_aware()
-    return train_end_date
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# PAGE: “About”
-# ─────────────────────────────────────────────────────────────────────────────
-if selection == "About":
-    st.title("About This Dashboard Suite")
-
-    st.markdown(
-        """
-        ---
-        *Overarching Question:*  
-        **How can we best estimate police demand in an automated manner to inform the most effective use of police resources to reduce residential burglary in London (UK)?**
-
-        ---
-        ### 1. Summary Statistics & Trends  
-        - **KPIs & Charts**:  
-          - Total burglaries, average burglaries per ward,  
-            average house price (at period end), and average crime score.  
-          - Interactive charts:  
-            - Scatter plots (with trend line)  
-            - Bar charts (top 10 wards)  
-            - Time-series (monthly burglary trends)  
-            - Parallel coordinates (IMD domain scores vs. burglary).  
-        - **Purpose**: Understand how burglary patterns evolve over time,  
-          and how they correlate with socio-economic indicators,  
-          housing costs, and overall crime levels.
-
-        ### 2. Model Overview  
-        - **Actual vs. Predicted**:  
-          - Compare observed burglary counts to our ensemble model’s forecasts.  
-          - Select any ward to view a time series and prediction metrics (TabNet, XGBoost, Ensemble).  
-        - **Purpose**:  
-          - Validate model accuracy at the ward level.  
-          - Identify wards where forecasts need improvement.
-
-        ### 3. Choropleth Map  
-        - **Geographic Forecast**:  
-          - Interactive Mapbox-based map of London wards, shaded by predicted burglary count.  
-          - Hover on wards to view code and predicted values.  
-        - **Purpose**:  
-          - Visualize “hot spots” of expected demand.  
-          - Help policing teams allocate resources more efficiently.
-
-        ---
-        """
-    )
-
-# ─────────────────────────────────────────────────────────────────────────────
-# PAGE: “Summary Statistics”
-# ─────────────────────────────────────────────────────────────────────────────
-elif selection == "Summary Statistics":
-    df = load_processed_data()
-
-    st.title("Summary Statistics & Trends")
-    st.markdown(
-        """
-        Use the date‐range selector below to filter the data.  
-        The KPIs and charts will update automatically.
-        """
-    )
-
-    # 1) Date‐range slider (native Python dates)
-    min_date = df["date"].min().date()
-    max_date = df["date"].max().date()
-    start_date, end_date = st.slider(
-        "Select Date Range:",
-        min_value=min_date,
-        max_value=max_date,
-        value=(min_date, max_date),
-        format="YYYY-MM"
-    )
-    # Convert back to pandas Timestamps
-    start_ts = pd.to_datetime(start_date)
-    end_ts   = pd.to_datetime(end_date) + pd.offsets.MonthEnd(0)
-
-    # 2) Filtered DataFrame
-    mask = (df["date"] >= start_ts) & (df["date"] <= end_ts)
-    dff = df.loc[mask].copy()
-
-    # 3) KPIs
-    total_burglary    = int(dff["burglary_count"].sum())
-    avg_burg_per_ward = dff.groupby("ward_code")["burglary_count"].mean().mean()
-    avg_price         = dff["house_price"].mean()
-    avg_crime         = dff["crime_score"].mean()
-
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Residential Burglaries (Selected Period)", f"{total_burglary:,}")
-    col2.metric("Avg Burglaries / Ward", f"{avg_burg_per_ward:.1f}")
-    col3.metric("Avg House Price (£)", f"{avg_price:,.0f}")
-    col4.metric("Avg Crime Score", f"{avg_crime:.2f}")
-
-    st.markdown("---")
-
-    # 4) X/Y selectors for scatter plot
-    numeric_cols = [
-        "burglary_count", "house_price",
-        "crime_score", "education_score", "employment_score",
-        "environment_score", "health_score", "housing_score", "income_score"
-    ]
-    sc1, sc2 = st.columns(2)
-    with sc1:
-        x_attr = st.selectbox(
-            "Scatter X‐axis",
-            options=numeric_cols,
-            index=numeric_cols.index("crime_score")
-        )
-    with sc2:
-        y_attr = st.selectbox(
-            "Scatter Y‐axis",
-            options=numeric_cols,
-            index=numeric_cols.index("house_price")
-        )
-
-    st.markdown("")  # small gap before charts
-
-    # 5) Build & cache the four figures in one shot
-    @st.cache_data
-    def build_summary_figs(start_ts, end_ts, x_attr, y_attr):
-        # Re‐filter the global df to avoid pickling issues
-        df2 = load_processed_data()  # cached load
-        mask2 = (df2["date"] >= start_ts) & (df2["date"] <= end_ts)
-        dff2 = df2.loc[mask2].copy()
-
-        # 5A) Scatter with regression
-        # Optionally sample to speed up plotting if very large:
-        if len(dff2) > 5000:
-            d_sample = dff2.sample(5000, random_state=42)
-        else:
-            d_sample = dff2
-
-        fig_sc = go.Figure()
-        fig_sc.add_trace(
-            go.Scatter(
-                x=d_sample[x_attr],
-                y=d_sample[y_attr],
-                mode="markers",
-                marker=dict(color="#1f77b4", size=4, opacity=0.6),
-                hovertemplate=f"{x_attr}: %{{x}}<br>{y_attr}: %{{y}}<br>Ward: %{{customdata}}<extra></extra>",
-                customdata=d_sample["ward_name"],
-                name="Data points"
-            )
-        )
-        # Compute regression on the *full* filtered set (not just sample):
-        if len(dff2) > 1:
-            x_clean = pd.to_numeric(dff2[x_attr], errors="coerce").dropna()
-            y_clean = pd.to_numeric(dff2[y_attr], errors="coerce").loc[x_clean.index]
-            if len(x_clean) > 1:
-                slope, intercept = np.polyfit(x_clean, y_clean, 1)
-                xr = np.linspace(x_clean.min(), x_clean.max(), 100)
-                yr = slope * xr + intercept
-                fig_sc.add_trace(
-                    go.Scatter(
-                        x=xr,
-                        y=yr,
-                        mode="lines",
-                        name="Trend Line",
-                        line=dict(color="red", width=3),
-                        hoverinfo="skip"
-                    )
-                )
-        fig_sc.update_layout(
-            title=f"{y_attr} vs. {x_attr}",
-            xaxis_title=x_attr,
-            yaxis_title=y_attr,
-            template="ggplot2",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=20, r=20, t=50, b=30),
-        )
-        fig_sc.update_xaxes(showgrid=True, gridcolor="black", gridwidth=0.5)
-        fig_sc.update_yaxes(showgrid=True, gridcolor="black", gridwidth=0.5)
-
-        # 5B) Bar chart: Top 10 Wards by Avg Burglaries
-        top10 = (
-            dff2.groupby(["ward_code", "ward_name"])["burglary_count"]
-            .mean()
-            .nlargest(10)
-            .reset_index()
-        )
-        fig_bar = px.bar(
-            top10,
-            x="ward_name",
-            y="burglary_count",
-            title="Top 10 Wards by Avg Residential Burglaries",
-            template="ggplot2"
-        )
-        fig_bar.update_traces(marker_color="#1f77b4")
-        fig_bar.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=20, r=20, t=50, b=30)
-        )
-        fig_bar.update_xaxes(showgrid=True, gridcolor="black", gridwidth=0.5)
-        fig_bar.update_yaxes(showgrid=True, gridcolor="black", gridwidth=0.5)
-
-        # 5C) Time series: Avg Monthly Burglaries
-        ts2 = dff2.groupby("date")["burglary_count"].mean().reset_index()
-        fig_ts = px.line(
-            ts2,
-            x="date",
-            y="burglary_count",
-            title="Avg Monthly Residential Burglaries",
-            template="ggplot2"
-        )
-        fig_ts.update_traces(line=dict(color="#1f77b4", width=3))
-        fig_ts.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=20, r=20, t=50, b=30)
-        )
-        fig_ts.update_xaxes(showgrid=True, gridcolor="black", gridwidth=0.5)
-        fig_ts.update_yaxes(showgrid=True, gridcolor="black", gridwidth=0.5)
-
-        # 5D) Parallel coordinates: Domain Scores vs. Avg Burglaries
-        domain_cols2 = [
-            "crime_score", "education_score", "employment_score",
-            "environment_score", "health_score", "housing_score", "income_score"
-        ]
-        parallel_df = (
-            dff2.groupby("ward_name")[domain_cols2 + ["burglary_count"]]
-            .mean()
-            .reset_index()
-        )
-        fig_par = px.parallel_coordinates(
-            parallel_df,
-            dimensions=domain_cols2 + ["burglary_count"],
-            color="burglary_count",
-            color_continuous_scale="OrRd",
-            title="IMD Domain Scores vs. Avg Residential Burglary",
-            template="ggplot2"
-        )
-        fig_par.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=20, r=20, t=80, b=30)
-        )
-
-        return fig_sc, fig_bar, fig_ts, fig_par
-
-    # Call the cached builder
-    fig_scatter, fig_bar, fig_ts, fig_par = build_summary_figs(start_ts, end_ts, x_attr, y_attr)
-
-    # 6) Display all four charts
-    st.plotly_chart(fig_scatter, use_container_width=True)
-    st.plotly_chart(fig_bar,     use_container_width=True)
-    st.plotly_chart(fig_ts,      use_container_width=True)
-    st.plotly_chart(fig_par,     use_container_width=True)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# PAGE: “Model Overview”
-# ─────────────────────────────────────────────────────────────────────────────
-elif selection == "Model Overview":
-    data = load_prediction_data()
-
-    # Double‐check that ward_name was populated after merge
-    missing_names = data.loc[data["ward_name"].isna(), "ward_code"].unique().tolist()
-    if missing_names:
-        st.warning(f"Warning: {len(missing_names)} ward codes missing names (they’ll appear as code–code).")
-
-    st.title("Model Performance Dashboard")
-    st.markdown("Choose a ward to see actual vs. predicted burglary counts over time.")
-
-    # 1) Recompute train_end_date (cached) so we know where train vs test splits
-    train_end_date = get_train_end_date(
-        PROJECT_ROOT / "processed" / "final_dataset_residential_burglary_reordered.csv",
-        "burglary_count"
-    )
-
-    # 2) Create a combined display column (code + name)
-    data["ward_display"] = data["ward_code"] + " – " + data["ward_name"].fillna(data["ward_code"])
-
-    # 3) Build a sorted list of unique display values for the dropdown
-    ward_list = sorted(data["ward_display"].unique())
-
-    # 4) Let the user pick a combined display string
-    selected_display = st.selectbox("Select Ward (code – name)", ward_list)
-
-    # 5) Extract the ward_code portion by splitting on " – "
-    selected_code = selected_display.split(" – ")[0]
-
-    # 6) Filter rows where ward_code == selected_code
-    ward_df = data[data["ward_code"] == selected_code].sort_values("date")
-
-    # 7) Show the combined display in the header
-    st.subheader(f"Time Series: {selected_display}")
-
-    if ward_df.empty:
-        st.write("No data available for this ward.")
+def load_data():
+    """Load available data files"""
+    global allocation_data, prediction_data
+    
+    print("🚀 Loading data files...")
+    print("=" * 60)
+    
+    # Load allocation data (primary file)
+    allocation_data = safe_read_csv('enhanced_allocation_results_actual.csv')
+    
+    # Load prediction data (secondary file)  
+    prediction_data = safe_read_csv('realistic_detailed_predictions.csv')
+    
+    print("=" * 60)
+    print("📊 LOADING SUMMARY:")
+    
+    if allocation_data is not None:
+        print(f"✅ Allocation data: {len(allocation_data)} records")
+        print(f"   Columns: {list(allocation_data.columns)[:5]}...")
+        print(f"   Wards: {allocation_data['ward_code'].nunique()}")
+        if 'year' in allocation_data.columns:
+            print(f"   Years: {sorted(allocation_data['year'].unique())}")
     else:
-        fig = go.Figure()
+        print("❌ Allocation data: Not loaded")
+    
+    if prediction_data is not None:
+        print(f"✅ Prediction data: {len(prediction_data)} records")
+        print(f"   Columns: {list(prediction_data.columns)[:5]}...")
+        print(f"   Wards: {prediction_data['ward_code'].nunique()}")
+        if 'year' in prediction_data.columns:
+            print(f"   Years: {sorted(prediction_data['year'].unique())}")
+    else:
+        print("❌ Prediction data: Not loaded")
+    
+    return allocation_data is not None or prediction_data is not None
 
-        # Plot “Actual” in blue
-        fig.add_trace(
-            go.Scatter(
-                x=ward_df["date"],
-                y=ward_df["actual"],
-                mode="lines+markers",
-                name="Actual",
-                marker=dict(symbol="circle", size=6),
-                line=dict(color="#1f77b4", width=2),
-            )
-        )
+@app.route('/')
+def dashboard():
+    """Main dashboard page"""
+    return render_template('unified_dashboard.html')
 
-        # Plot “Ensemble Predicted (TRAIN)” in orange for dates <= train_end_date
-        train_mask = ward_df["date"] <= train_end_date
-        if train_mask.any():
-            fig.add_trace(
-                go.Scatter(
-                    x=ward_df.loc[train_mask, "date"],
-                    y=ward_df.loc[train_mask, "pred_ensemble"],
-                    mode="lines+markers",
-                    name="Ensemble Predicted (Train)",
-                    marker=dict(symbol="x", size=6),
-                    line=dict(color="orange", width=2),
-                )
-            )
+@app.route('/api/summary')
+def get_summary():
+    """Get overall data summary"""
+    try:
+        summary = {
+            'data_loaded': {
+                'allocation': allocation_data is not None,
+                'predictions': prediction_data is not None
+            },
+            'record_counts': {},
+            'date_ranges': {},
+            'ward_counts': {}
+        }
+        
+        if allocation_data is not None:
+            summary['record_counts']['allocation'] = len(allocation_data)
+            summary['ward_counts']['allocation'] = allocation_data['ward_code'].nunique()
+            if 'year' in allocation_data.columns:
+                summary['date_ranges']['allocation'] = {
+                    'min_year': int(allocation_data['year'].min()),
+                    'max_year': int(allocation_data['year'].max())
+                }
+        
+        if prediction_data is not None:
+            summary['record_counts']['predictions'] = len(prediction_data)
+            summary['ward_counts']['predictions'] = prediction_data['ward_code'].nunique()
+            if 'year' in prediction_data.columns:
+                summary['date_ranges']['predictions'] = {
+                    'min_year': int(prediction_data['year'].min()),
+                    'max_year': int(prediction_data['year'].max())
+                }
+        
+        return jsonify(summary)
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-        # Plot “Ensemble Predicted (TEST)” in green for dates > train_end_date
-        test_mask = ward_df["date"] > train_end_date
-        if test_mask.any():
-            fig.add_trace(
-                go.Scatter(
-                    x=ward_df.loc[test_mask, "date"],
-                    y=ward_df.loc[test_mask, "pred_ensemble"],
-                    mode="lines+markers",
-                    name="Ensemble Predicted (Test)",
-                    marker=dict(symbol="x", size=6),
-                    line=dict(color="green", width=2),
-                )
-            )
-
-        fig.update_layout(
-            title=f"Actual vs. Ensemble Predicted for {selected_display}",
-            xaxis_title="Date",
-            yaxis_title="Burglary Count",
-            template="plotly_white",
-            margin=dict(l=40, r=40, t=80, b=40),
-        )
-        fig.update_xaxes(tickformat="%Y-%m")
-        st.plotly_chart(fig, use_container_width=True)
-
-        # 8) Show numeric metrics (including both code and name)
-        st.subheader(f"Numeric Metrics Over Time: {selected_display}")
-        metrics_df = ward_df[[
-            "date", "ward_code", "ward_name", "actual", "pred_tabnet", "pred_xgboost", "pred_ensemble"
-        ]].copy()
-        metrics_df = metrics_df.rename(columns={
-            "ward_code":    "Ward Code",
-            "ward_name":    "Ward Name",
-            "actual":       "Actual",
-            "pred_tabnet":  "TabNet Prediction",
-            "pred_xgboost": "XGBoost Prediction",
-            "pred_ensemble":"Ensemble Prediction"
+@app.route('/api/allocation')
+def get_allocation_data():
+    """Get allocation data with optional filtering"""
+    try:
+        if allocation_data is None:
+            return jsonify({'error': 'Allocation data not loaded'}), 404
+        
+        year = request.args.get('year', type=int)
+        month = request.args.get('month', type=int)
+        ward_filter = request.args.get('ward_filter', '')
+        
+        data = allocation_data.copy()
+        
+        if year and 'year' in data.columns:
+            data = data[data['year'] == year]
+        if month and 'month' in data.columns:
+            data = data[data['month'] == month]
+        if ward_filter:
+            data = data[data['ward_code'].str.contains(ward_filter, case=False, na=False)]
+        
+        return jsonify({
+            'data': data.to_dict('records'),
+            'total_records': len(data),
+            'filters_applied': {'year': year, 'month': month, 'ward_filter': ward_filter}
         })
-        st.dataframe(metrics_df.set_index("date"), use_container_width=True)
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
+@app.route('/api/statistics')
+def get_statistics():
+    """Get summary statistics for dashboard KPIs"""
+    try:
+        stats = {}
+        
+        if allocation_data is not None:
+            year = request.args.get('year', type=int)
+            month = request.args.get('month', type=int)
+            
+            data = allocation_data.copy()
+            if year and 'year' in data.columns:
+                data = data[data['year'] == year]
+            if month and 'month' in data.columns:
+                data = data[data['month'] == month]
+            
+            # Calculate total actual crimes from allocation data
+            total_crimes = 0
+            if 'actual' in data.columns:
+                total_crimes = float(data['actual'].sum())
+            elif 'burglary_count' in data.columns:
+                total_crimes = float(data['burglary_count'].sum())
+            
+            stats['allocation'] = {
+                'total_officers': float(data['allocated_officers'].sum()) if 'allocated_officers' in data.columns else 0,
+                'avg_officers_per_ward': float(data['allocated_officers'].mean()) if 'allocated_officers' in data.columns else 0,
+                'max_officers': float(data['allocated_officers'].max()) if 'allocated_officers' in data.columns else 0,
+                'min_officers': float(data['allocated_officers'].min()) if 'allocated_officers' in data.columns else 0,
+                'total_wards': int(data['ward_code'].nunique()),
+                'high_risk_wards': int((data['risk_category'] == 'Critical').sum()) if 'risk_category' in data.columns else 0,
+                'surge_activations': int((data['capacity_multiplier'] > 1.0).sum()) if 'capacity_multiplier' in data.columns else 0,
+                'total_crimes': total_crimes  # ✅ NEW: Add total crimes calculation
+            }
+        
+        if prediction_data is not None:
+            # Also calculate from prediction data for backup
+            prediction_crimes = 0
+            if 'actual' in prediction_data.columns:
+                prediction_crimes = float(prediction_data['actual'].sum())
+            
+            stats['predictions'] = {
+                'total_actual_crimes': prediction_crimes,
+                'total_predicted_crimes': float(prediction_data['pred_ensemble'].sum()) if 'pred_ensemble' in prediction_data.columns else 0,
+                'avg_prediction_error': float(prediction_data['abs_error'].mean()) if 'abs_error' in prediction_data.columns else 0,
+                'prediction_accuracy': float(100 - prediction_data['abs_pct_error'].mean()) if 'abs_pct_error' in prediction_data.columns else 0
+            }
+            
+            # ✅ NEW: Use prediction data for total crimes if allocation doesn't have it
+            if 'allocation' not in stats or stats['allocation']['total_crimes'] == 0:
+                if 'allocation' not in stats:
+                    stats['allocation'] = {}
+                stats['allocation']['total_crimes'] = prediction_crimes
+        
+        return jsonify(stats)
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PAGE: “Choropleth Map”
-# ─────────────────────────────────────────────────────────────────────────────
-elif selection == "Choropleth Map":
-    st.title("Predicted Burglary Map")
+@app.route('/api/ward_list')
+def get_ward_list():
+    """Get list of all wards for dropdowns"""
+    try:
+        wards = []
+        
+        if allocation_data is not None:
+            allocation_wards = allocation_data[['ward_code']].drop_duplicates()
+            wards.extend([{'ward_code': row['ward_code'], 'ward_name': row['ward_code']} 
+                         for _, row in allocation_wards.iterrows()])
+        
+        # Remove duplicates and sort
+        unique_wards = {ward['ward_code']: ward for ward in wards}.values()
+        sorted_wards = sorted(unique_wards, key=lambda x: x['ward_code'])
+        
+        return jsonify({
+            'wards': sorted_wards,
+            'total_count': len(sorted_wards)
+        })
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-    # Load precomputed predictions (from test_predictions_fixed.csv)
-    results = load_prediction_data()
+@app.route('/api/predictions/<ward_code>')
+def get_ward_predictions(ward_code):
+    """Get prediction data for specific ward"""
+    try:
+        if prediction_data is None:
+            return jsonify({'error': 'Prediction data not available'}), 404
+        
+        ward_data = prediction_data[prediction_data['ward_code'] == ward_code].copy()
+        
+        if len(ward_data) == 0:
+            return jsonify({'error': 'No data found for this ward'}), 404
+        
+        # Sort by date if possible
+        if 'year' in ward_data.columns and 'month' in ward_data.columns:
+            ward_data = ward_data.sort_values(['year', 'month'])
+            # Create date column
+            ward_data['date'] = pd.to_datetime(ward_data[['year','month']].assign(day=1)).dt.strftime('%Y-%m-%d')
+        
+        return jsonify({
+            'data': ward_data.to_dict('records'),
+            'ward_code': ward_code,
+            'ward_name': ward_code,  # Use code as name for now
+            'record_count': len(ward_data)
+        })
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-    # Load & cache the geojson
-    geojson = load_geojson()
+@app.route('/api/performance_metrics')
+def get_performance_metrics():
+    """Get model performance metrics"""
+    try:
+        if prediction_data is None:
+            return jsonify({'error': 'Prediction data not available'}), 404
+        
+        # Calculate various performance metrics
+        data = prediction_data
+        
+        # Check if required columns exist
+        required_cols = ['actual', 'pred_ensemble', 'error', 'abs_error', 'abs_pct_error']
+        available_cols = [col for col in required_cols if col in data.columns]
+        
+        if not available_cols:
+            return jsonify({'error': 'No prediction columns found'}), 404
+        
+        metrics = {}
+        
+        if 'abs_error' in data.columns:
+            metrics['mae'] = float(data['abs_error'].mean())
+        
+        if 'error' in data.columns:
+            rmse = np.sqrt((data['error'] ** 2).mean())
+            metrics['rmse'] = float(rmse)
+        
+        if 'abs_pct_error' in data.columns:
+            metrics['mape'] = float(data['abs_pct_error'].mean())
+            metrics['accuracy'] = float(100 - data['abs_pct_error'].mean())
+        
+        if 'actual' in data.columns and 'pred_ensemble' in data.columns:
+            # Calculate R²
+            ss_res = ((data['actual'] - data['pred_ensemble']) ** 2).sum()
+            ss_tot = ((data['actual'] - data['actual'].mean()) ** 2).sum()
+            r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+            metrics['r_squared'] = float(r_squared)
+        
+        # Error distribution
+        error_dist = {}
+        if 'error_magnitude' in data.columns:
+            error_dist = data['error_magnitude'].value_counts().to_dict()
+        
+        return jsonify({
+            'metrics': metrics,
+            'error_distribution': error_dist,
+            'total_predictions': len(data)
+        })
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-    # Build Plotly‐Mapbox choropleth
-    fig_map = px.choropleth_mapbox(
-        results,
-        geojson=geojson,
-        featureidkey="properties.WD20CD",
-        locations="ward_code",
-        color="pred_ensemble",  # column name for ensemble predictions
-        mapbox_style="carto-positron",
-        center={"lat": 51.5, "lon": 0.1},
-        zoom=10,
-        opacity=0.75,
-        color_continuous_scale="Reds",
-        labels={"pred_ensemble": "Predicted Burglary Count"},
-    )
-    fig_map.update_layout(margin={"r": 0, "t": 0, "l": 0, "b": 0})
+@app.route('/api/charts/time_series')
+def get_time_series_data():
+    """Get time series data for charts"""
+    try:
+        chart_type = request.args.get('type', 'burglary')
+        
+        # Use allocation data as primary source
+        if allocation_data is None:
+            return jsonify({'error': 'No data available'}), 404
+        
+        data = allocation_data.copy()
+        
+        if chart_type == 'burglary' and 'burglary_count' in data.columns:
+            # Group by date if possible
+            if 'year' in data.columns and 'month' in data.columns:
+                data['date'] = pd.to_datetime(data[['year','month']].assign(day=1))
+                ts_data = data.groupby('date')['burglary_count'].mean().reset_index()
+                ts_data['date'] = ts_data['date'].dt.strftime('%Y-%m-%d')
+                
+                return jsonify({
+                    'data': ts_data.to_dict('records'),
+                    'title': 'Average Monthly Burglaries',
+                    'x_label': 'Date',
+                    'y_label': 'Burglary Count'
+                })
+        
+        return jsonify({'error': 'Chart data not available'}), 400
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-    st.plotly_chart(fig_map, use_container_width=True)
+@app.route('/api/charts/top_wards')
+def get_top_wards():
+    """Get top wards data for bar charts"""
+    try:
+        metric = request.args.get('metric', 'burglary')
+        limit = request.args.get('limit', 10, type=int)
+        
+        if allocation_data is None:
+            return jsonify({'error': 'No data available'}), 404
+        
+        data = allocation_data.copy()
+        
+        if metric == 'burglary' and 'burglary_count' in data.columns:
+            top_wards = (
+                data.groupby('ward_code')['burglary_count']
+                .mean()
+                .nlargest(limit)
+                .reset_index()
+            )
+            top_wards['ward_name'] = top_wards['ward_code']  # Use code as name
+            
+            return jsonify({
+                'data': top_wards.to_dict('records'),
+                'title': f'Top {limit} Wards by Average Burglaries',
+                'x_label': 'Ward',
+                'y_label': 'Average Burglary Count'
+            })
+        
+        return jsonify({'error': 'Invalid metric or data not available'}), 400
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/debug')
+def debug_info():
+    """Debug endpoint to check what's available"""
+    debug_data = {
+        'current_directory': os.getcwd(),
+        'files_in_directory': os.listdir('.'),
+        'data_loaded': {
+            'allocation': allocation_data is not None,
+            'predictions': prediction_data is not None,
+            'geojson_cache': geojson_cache is not None
+        }
+    }
+    
+    if allocation_data is not None:
+        debug_data['allocation_info'] = {
+            'shape': allocation_data.shape,
+            'columns': list(allocation_data.columns),
+            'sample_data': allocation_data.head(2).to_dict('records'),
+            'year_range': [int(allocation_data['year'].min()), int(allocation_data['year'].max())] if 'year' in allocation_data.columns else 'No year column',
+            'month_range': sorted(allocation_data['month'].unique().tolist()) if 'month' in allocation_data.columns else 'No month column',
+            'unique_wards': allocation_data['ward_code'].nunique() if 'ward_code' in allocation_data.columns else 'No ward_code column'
+        }
+    
+    if prediction_data is not None:
+        debug_data['prediction_info'] = {
+            'shape': prediction_data.shape,
+            'columns': list(prediction_data.columns),
+            'sample_data': prediction_data.head(2).to_dict('records'),
+            'year_range': [int(prediction_data['year'].min()), int(prediction_data['year'].max())] if 'year' in prediction_data.columns else 'No year column',
+            'month_range': sorted(prediction_data['month'].unique().tolist()) if 'month' in prediction_data.columns else 'No month column'
+        }
+    
+    # Test GeoJSON loading
+    try:
+        geojson_test = fetch_geojson()
+        if geojson_test:
+            debug_data['geojson_info'] = {
+                'features_count': len(geojson_test.get('features', [])),
+                'sample_properties': list(geojson_test['features'][0].get('properties', {}).keys()) if geojson_test.get('features') else 'No features'
+            }
+        else:
+            debug_data['geojson_info'] = 'Failed to load GeoJSON'
+    except Exception as e:
+        debug_data['geojson_info'] = f'GeoJSON error: {str(e)}'
+    
+    return jsonify(debug_data)
+
+if __name__ == '__main__':
+    print("🚀 Starting Simplified London Police Dashboard...")
+    print("📂 Looking for data files in current directory...")
+    print("=" * 60)
+    
+    # List available files
+    print("📁 Files in current directory:")
+    for file in os.listdir('.'):
+        if file.endswith('.csv'):
+            print(f"   ✅ {file}")
+    
+    print("=" * 60)
+    
+    # Try to load data on startup
+    if load_data():
+        print("✅ Data loaded successfully!")
+    else:
+        print("⚠️ No data files found - dashboard will have limited functionality")
+        print("📋 Expected files:")
+        print("   - enhanced_allocation_results_actual.csv")
+        print("   - realistic_detailed_predictions.csv")
+    
+    print("=" * 60)
+    print("🌐 Dashboard will be available at: http://127.0.0.1:5000")
+    print("🔧 Debug info available at: http://127.0.0.1:5000/api/debug")
+    print("=" * 60)
+    
+    # Run the Flask app
+    app.run(debug=True, host='127.0.0.1', port=5000)

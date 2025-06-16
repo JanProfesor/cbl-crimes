@@ -31,7 +31,7 @@ def load_csv_data():
         
         # Priority order for CSV files - look for the main enhanced allocation file
         preferred_files = [
-            'enhanced_allocation_results.csv'
+            'enhanced_allocation_results_actual.csv'
         ]
         
         csv_file = None

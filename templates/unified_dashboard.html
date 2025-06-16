@@ -1,0 +1,2822 @@
+function switchScreen(screenName) {
+            // Hide all screens
+            document.querySelectorAll('.screen').forEach(screen => {
+                screen.classList.remove('active');
+            });
+
+            // Show selected screen
+            document.getElementById(screenName).classList.add('active');
+
+            // Update navigation
+            document.querySelectorAll('.nav-link').forEach(link => {
+                link.classList.remove('active');
+            });
+            document.querySelector(`[data-screen="${screenName}"]`).classList.add('active');
+
+            currentScreen = screenName;
+
+            // ✅ NEW: Update sidebar current screen display
+            document.getElementById('currentScreenDisplay').textContent = 
+                screenName.charAt(0).toUpperCase() + screenName.slice(1).replace(/([A-Z])/g, ' $1');
+
+            // Load screen-specific data
+            loadScreenData(screenName);
+        }
+
+        // ✅ NEW: Enhanced sidebar update functions
+        function updateSidebarStats(stats) {
+            if (stats.allocation) {
+                document.getElementById('sidebarWards').textContent = stats.allocation.total_wards || '---';
+                document.getElementById('sidebarOfficers').textContent = Math.round(stats.allocation.total_officers || 0).toLocaleString();
+                document.getElementById('sidebarHighRisk').textContent = stats.allocation.high_risk_wards || '---';
+            }
+            
+            if (stats.predictions) {
+                document.getElementById('sidebarAccuracy').textContent = `${(stats.predictions.prediction_accuracy || 0).toFixed(1)}%`;
+            }
+            
+            // Update last update time
+            document.getElementById('sidebarLastUpdate').textContent = new Date().toLocaleTimeString();
+        }
+
+        function updateSessionTime() {
+            const elapsed = Date.now() - sessionStartTime;
+            const hours = Math.floor(elapsed / 3600000);
+            const minutes = Math.floor((elapsed % 3600000) / 60000);
+            const seconds = Math.floor((elapsed % 60000) / 1000);
+            
+            const timeString = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            document.getElementById('sessionTime').textContent = timeString;
+        }
+
+        function updateRefreshCount() {
+            refreshCount++;
+            document.getElementById('refreshCount').textContent = refreshCount;
+        }
+
+        // ✅ NEW: Enhanced quick action functions
+        function clearAllFilters() {
+            // Clear all filter inputs across all screens
+            document.querySelectorAll('select[id*="Year"], select[id*="Month"], input[id*="Filter"]').forEach(input => {
+                if (input.tagName === 'SELECT') {
+                    input.value = '';
+                } else {
+                    input.value = '';
+                }
+            });
+            
+            // Refresh current screen
+            loadScreenData(currentScreen);
+            
+            showAlert('All filters cleared successfully!', 'success');
+            addSidebarAlert('Filters Cleared', 'All screen filters have been reset', 'success');
+        }
+
+        function downloadDebugInfo() {
+            showAlert('Downloading debug information...', 'success');
+            
+            // Get debug info from API
+            fetch('/api/debug')
+                .then(response => response.json())
+                .then(data => {
+                    const debugInfo = {
+                        timestamp: new Date().toISOString(),
+                        session_info: {
+                            current_screen: currentScreen,
+                            session_duration: Date.now() - sessionStartTime,
+                            refresh_count: refreshCount
+                        },
+                        system_data: data,
+                        browser_info: {
+                            user_agent: navigator.userAgent,
+                            viewport: `${window.innerWidth}x${window.innerHeight}`,
+                            local_storage_available: typeof(Storage) !== "undefined"
+                        }
+                    };
+                    
+                    downloadJSON(debugInfo, `debug_info_${new Date().toISOString().split('T')[0]}.json`);
+                    showAlert('Debug info downloaded successfully!', 'success');
+                    addSidebarAlert('Debug Export', 'System debug information exported', 'success');
+                })
+                .catch(error => {
+                    showAlert('Error downloading debug info: ' + error.message, 'error');
+                });
+        }
+
+        function addSidebarAlert(title, message, type = 'warning') {
+            const alertsContainer = document.getElementById('sidebarAlerts');
+            if (!alertsContainer) return;
+            
+            const alertElement = document.createElement('div');
+            alertElement.className = `alert-card alert-${type}`;
+            alertElement.innerHTML = `
+                <div class="alert-title">${title}</div>
+                <div class="alert-text">${message}</div>
+            `;
+            
+            // Add to beginning of alerts
+            alertsContainer.insertBefore(alertElement, alertsContainer.firstChild);
+            
+            // Keep only last 6 alerts
+            while (alertsContainer.children.length > 6) {
+                alertsContainer.removeChild(alertsContainer.lastChild);
+            }
+            
+            // Auto-remove after 30 seconds
+            setTimeout(() => {
+                if (alertElement.parentNode) {
+                    alertElement.remove();
+                }
+            }, 30000);
+        }
+
+        function updateSystemStatus(isOnline = true, service = 'general') {
+            const statusElements = {
+                'data': 'dataStatusDot',
+                'api': 'apiStatusDot',
+                'map': 'mapStatusDot',
+                'db': 'dbStatusDot'
+            };
+            
+            const elementId = statusElements[service] || 'dataStatusDot';
+            const element = document.getElementById(elementId);
+            
+            if (element) {
+                element.className = `status-dot ${isOnline ? 'status-online' : 'status-offline'}`;
+            }
+        }
+
+        function startSessionTimer() {
+            // Update session time every second
+            setInterval(updateSessionTime, 1000);
+        }
+
+        function refreshAllData() {
+            console.log('🔄 Refreshing all data...');
+            updateRefreshCount();
+            addSidebarAlert('Data Refresh', 'Updating all dashboard data...', 'success');
+            
+            loadInitialData().then(() => {
+                loadScreenData(currentScreen);
+                showAlert('All data refreshed successfully!', 'success');
+                addSidebarAlert('Refresh Complete', 'All data updated successfully', 'success');
+            }).catch(error => {
+                showAlert('Error refreshing data: ' + error.message, 'error');
+                addSidebarAlert('Refresh Failed', 'Data update encountered errors', 'danger');
+            });
+        }<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>London Police Intelligence Dashboard</title>
+    
+    <!-- External Libraries -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    
+    <style>
+        :root {
+            --primary-bg: #0f0f23;
+            --secondary-bg: #1a1a2e;
+            --accent-bg: #16213e;
+            --primary-text: #e0e6ed;
+            --secondary-text: #8892b0;
+            --accent-color: #64ffda;
+            --danger-color: #e74c3c;
+            --warning-color: #f39c12;
+            --success-color: #27ae60;
+            --card-bg: rgba(20, 20, 35, 0.95);
+            --border-color: rgba(255, 255, 255, 0.1);
+            --shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, var(--primary-bg) 0%, var(--secondary-bg) 50%, var(--accent-bg) 100%);
+            min-height: 100vh;
+            color: var(--primary-text);
+            overflow-x: hidden;
+        }
+
+        /* Layout Container */
+        .dashboard-container {
+            display: grid;
+            grid-template-columns: 280px 1fr;
+            grid-template-rows: auto 1fr;
+            height: 100vh;
+            gap: 20px;
+            padding: 20px;
+        }
+
+        /* Header */
+        .header {
+            grid-column: 1 / -1;
+            background: var(--card-bg);
+            padding: 25px;
+            border-radius: 20px;
+            backdrop-filter: blur(15px);
+            box-shadow: var(--shadow);
+            border: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            color: var(--accent-color);
+            font-size: 2.5rem;
+            font-weight: bold;
+            text-shadow: 0 0 20px rgba(100, 255, 218, 0.3);
+            animation: glow 2s ease-in-out infinite alternate;
+        }
+
+        .header-controls {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .status-indicator {
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-online {
+            background: rgba(39, 174, 96, 0.2);
+            color: var(--success-color);
+            border: 1px solid var(--success-color);
+        }
+
+        .status-offline {
+            background: rgba(231, 76, 60, 0.2);
+            color: var(--danger-color);
+            border: 1px solid var(--danger-color);
+        }
+
+        /* Sidebar Navigation - Made Scrollable */
+        .sidebar {
+            background: var(--card-bg);
+            border-radius: 20px;
+            backdrop-filter: blur(15px);
+            box-shadow: var(--shadow);
+            border: 1px solid var(--border-color);
+            padding: 25px;
+            overflow-y: auto; /* ✅ NEW: Enable vertical scrolling */
+            max-height: calc(100vh - 140px); /* ✅ NEW: Set max height */
+        }
+
+        /* ✅ NEW: Custom scrollbar for sidebar */
+        .sidebar::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .sidebar::-webkit-scrollbar-track {
+            background: rgba(100, 255, 218, 0.1);
+            border-radius: 4px;
+        }
+
+        .sidebar::-webkit-scrollbar-thumb {
+            background: var(--accent-color);
+            border-radius: 4px;
+        }
+
+        .sidebar::-webkit-scrollbar-thumb:hover {
+            background: #4fc3f7;
+        }
+
+        .nav-menu {
+            list-style: none;
+        }
+
+        .nav-item {
+            margin-bottom: 10px;
+        }
+
+        .nav-link {
+            display: flex;
+            align-items: center;
+            padding: 15px 20px;
+            color: var(--secondary-text);
+            text-decoration: none;
+            border-radius: 12px;
+            transition: all 0.3s ease;
+            font-weight: 500;
+            gap: 12px;
+        }
+
+        .nav-link:hover {
+            background: rgba(100, 255, 218, 0.1);
+            color: var(--accent-color);
+            transform: translateX(5px);
+        }
+
+        .nav-link.active {
+            background: var(--accent-color);
+            color: var(--primary-bg);
+            box-shadow: 0 4px 15px rgba(100, 255, 218, 0.3);
+        }
+
+        .nav-icon {
+            font-size: 1.2rem;
+            width: 20px;
+            text-align: center;
+        }
+
+        /* Main Content Area */
+        .main-content {
+            background: var(--card-bg);
+            border-radius: 20px;
+            backdrop-filter: blur(15px);
+            box-shadow: var(--shadow);
+            border: 1px solid var(--border-color);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .content-header {
+            padding: 25px;
+            border-bottom: 1px solid var(--border-color);
+            background: rgba(100, 255, 218, 0.05);
+        }
+
+        .content-body {
+            flex: 1;
+            padding: 25px;
+            overflow-y: auto;
+        }
+
+        .screen {
+            display: none;
+        }
+
+        .screen.active {
+            display: block;
+        }
+
+        /* Dashboard Grid */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .dashboard-card {
+            background: rgba(15, 15, 35, 0.8);
+            border-radius: 15px;
+            padding: 25px;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            transition: transform 0.3s ease;
+        }
+
+        .dashboard-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 25px rgba(0, 0, 0, 0.4);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .card-title {
+            color: var(--accent-color);
+            font-size: 1.3rem;
+            font-weight: 600;
+        }
+
+        .card-icon {
+            font-size: 1.5rem;
+            color: var(--accent-color);
+        }
+
+        /* KPI Cards */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .kpi-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 25px;
+            border-radius: 15px;
+            text-align: center;
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+            border: 1px solid var(--border-color);
+            transition: transform 0.3s ease;
+        }
+
+        .kpi-card:hover {
+            transform: translateY(-8px);
+            box-shadow: 0 12px 35px rgba(102, 126, 234, 0.4);
+        }
+
+        .kpi-value {
+            font-size: 2.8rem;
+            font-weight: bold;
+            margin-bottom: 8px;
+            text-shadow: 0 0 15px rgba(255, 255, 255, 0.3);
+        }
+
+        .kpi-label {
+            font-size: 1rem;
+            opacity: 0.9;
+            font-weight: 500;
+        }
+
+        /* Charts Container */
+        .charts-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .chart-card {
+            background: rgba(15, 15, 35, 0.8);
+            border-radius: 15px;
+            padding: 25px;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            min-height: 400px;
+        }
+
+        .chart-title {
+            color: var(--accent-color);
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        /* Map Container */
+        .map-container {
+            height: 600px;
+            border-radius: 15px;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+            position: relative;
+        }
+
+        #map {
+            height: 100%;
+            width: 100%;
+        }
+
+        /* Controls */
+        .controls-section {
+            background: rgba(15, 15, 35, 0.8);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 1px solid var(--border-color);
+        }
+
+        .controls-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .control-label {
+            color: var(--accent-color);
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+
+        .control-input {
+            padding: 12px 15px;
+            border: 2px solid rgba(100, 255, 218, 0.3);
+            border-radius: 8px;
+            background: rgba(15, 15, 35, 0.8);
+            color: var(--primary-text);
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        .control-input:focus {
+            outline: none;
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 3px rgba(100, 255, 218, 0.2);
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: var(--accent-color);
+            color: var(--primary-bg);
+        }
+
+        .btn-primary:hover {
+            background: #4fc3f7;
+            transform: translateY(-2px);
+        }
+
+        .btn-secondary {
+            background: rgba(136, 146, 176, 0.2);
+            color: var(--secondary-text);
+            border: 1px solid var(--border-color);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(136, 146, 176, 0.3);
+            color: var(--primary-text);
+        }
+
+        /* Table Styles */
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            background: rgba(15, 15, 35, 0.6);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .data-table th {
+            background: var(--accent-color);
+            color: var(--primary-bg);
+            padding: 15px;
+            font-weight: 600;
+            text-align: left;
+        }
+
+        .data-table td {
+            padding: 12px 15px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .data-table tr:hover {
+            background: rgba(100, 255, 218, 0.05);
+        }
+
+        /* Loading States */
+        .loading {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+            color: var(--secondary-text);
+        }
+
+        .spinner {
+            border: 4px solid rgba(100, 255, 218, 0.3);
+            border-top: 4px solid var(--accent-color);
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+
+        /* Alerts */
+        .alert {
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .alert-success {
+            background: rgba(39, 174, 96, 0.2);
+            border: 1px solid var(--success-color);
+            color: var(--success-color);
+        }
+
+        .alert-error {
+            background: rgba(231, 76, 60, 0.2);
+            border: 1px solid var(--danger-color);
+            color: var(--danger-color);
+        }
+
+        .alert-warning {
+            background: rgba(243, 156, 18, 0.2);
+            border: 1px solid var(--warning-color);
+            color: var(--warning-color);
+        }
+
+        /* Responsive Design */
+        @media (max-width: 1200px) {
+            .dashboard-container {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto auto 1fr;
+            }
+            
+            .sidebar {
+                order: 2;
+            }
+            
+            .main-content {
+                order: 3;
+            }
+            
+            .charts-container {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .dashboard-container {
+                padding: 10px;
+                gap: 10px;
+            }
+            
+            .header h1 {
+                font-size: 1.8rem;
+            }
+            
+            .kpi-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            
+            .dashboard-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Animations */
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        @keyframes glow {
+            from { text-shadow: 0 0 20px rgba(100, 255, 218, 0.3); }
+            to { text-shadow: 0 0 30px rgba(100, 255, 218, 0.5); }
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .fade-in {
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        /* Full-screen chart modal */
+        .chart-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            z-index: 1000;
+            padding: 20px;
+        }
+
+        .chart-modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .chart-modal-content {
+            background: var(--card-bg);
+            border-radius: 15px;
+            padding: 25px;
+            width: 90%;
+            height: 80%;
+            position: relative;
+        }
+
+        .chart-modal-close {
+            position: absolute;
+            top: 15px;
+            right: 20px;
+            background: none;
+            border: none;
+            color: var(--accent-color);
+            font-size: 24px;
+            cursor: pointer;
+        }
+
+        /* Tooltip */
+        .tooltip {
+            position: absolute;
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 10px;
+            font-size: 12px;
+            pointer-events: none;
+            z-index: 1000;
+            box-shadow: var(--shadow);
+        }
+
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <!-- Header -->
+        <div class="header">
+            <h1>🚔 London Police Intelligence Dashboard</h1>
+            <div class="header-controls">
+                <div class="status-indicator status-online" id="statusIndicator">
+                    <span>●</span>
+                    <span id="statusText">Online</span>
+                </div>
+                <button class="btn btn-secondary" onclick="refreshAllData()">
+                    🔄 Refresh
+                </button>
+            </div>
+        </div>
+
+        <!-- Enhanced Scrollable Sidebar -->
+        <div class="sidebar">
+            <!-- Navigation Menu -->
+            <ul class="nav-menu">
+                <li class="nav-item">
+                    <a href="#" class="nav-link active" data-screen="overview">
+                        <span class="nav-icon">📊</span>
+                        Overview Dashboard
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="#" class="nav-link" data-screen="allocation">
+                        <span class="nav-icon">👮</span>
+                        Resource Allocation
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="#" class="nav-link" data-screen="predictions">
+                        <span class="nav-icon">🔮</span>
+                        Crime Predictions
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="#" class="nav-link" data-screen="analytics">
+                        <span class="nav-icon">📈</span>
+                        Analytics & Trends
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="#" class="nav-link" data-screen="map">
+                        <span class="nav-icon">🗺️</span>
+                        Interactive Map
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="#" class="nav-link" data-screen="performance">
+                        <span class="nav-icon">⚡</span>
+                        Model Performance
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="#" class="nav-link" data-screen="reports">
+                        <span class="nav-icon">📋</span>
+                        Reports & Export
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="#" class="nav-link" data-screen="settings">
+                        <span class="nav-icon">⚙️</span>
+                        Settings
+                    </a>
+                </li>
+            </ul>
+
+            <!-- Quick Stats Section -->
+            <div class="sidebar-section">
+                <h4>📊 Live Statistics</h4>
+                <div class="stat-row">
+                    <span class="stat-label">Active Wards:</span>
+                    <span class="stat-value" id="sidebarWards">---</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Total Officers:</span>
+                    <span class="stat-value" id="sidebarOfficers">---</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">High Risk Areas:</span>
+                    <span class="stat-value" id="sidebarHighRisk">---</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Prediction Accuracy:</span>
+                    <span class="stat-value" id="sidebarAccuracy">---</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Last Updated:</span>
+                    <span class="stat-value" id="sidebarLastUpdate">---</span>
+                </div>
+            </div>
+
+            <!-- System Health Section -->
+            <div class="sidebar-section">
+                <h4>🔧 System Health</h4>
+                <div class="status-indicator">
+                    <span class="status-dot status-online" id="dataStatusDot"></span>
+                    <span>Data Connection</span>
+                </div>
+                <div class="status-indicator">
+                    <span class="status-dot status-online" id="apiStatusDot"></span>
+                    <span>API Services</span>
+                </div>
+                <div class="status-indicator">
+                    <span class="status-dot status-warning" id="mapStatusDot"></span>
+                    <span>Map Service</span>
+                </div>
+                <div class="status-indicator">
+                    <span class="status-dot status-online" id="dbStatusDot"></span>
+                    <span>Database</span>
+                </div>
+            </div>
+
+            <!-- Current Session Info -->
+            <div class="sidebar-section">
+                <h4>📱 Session Info</h4>
+                <div class="stat-row">
+                    <span class="stat-label">Current Screen:</span>
+                    <span class="stat-value" id="currentScreenDisplay">Overview</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Session Time:</span>
+                    <span class="stat-value" id="sessionTime">00:00:00</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Data Refreshes:</span>
+                    <span class="stat-value" id="refreshCount">0</span>
+                </div>
+            </div>
+
+            <!-- Recent Alerts Section -->
+            <div class="sidebar-section">
+                <h4>⚠️ Recent Alerts</h4>
+                <div class="alert-container" id="sidebarAlerts">
+                    <div class="alert-card alert-warning">
+                        <div class="alert-title">High Crime Prediction</div>
+                        <div class="alert-text">Ward E05009317 - Sept 2024</div>
+                    </div>
+                    <div class="alert-card alert-success">
+                        <div class="alert-title">Resource Optimized</div>
+                        <div class="alert-text">Allocation updated successfully</div>
+                    </div>
+                    <div class="alert-card alert-danger">
+                        <div class="alert-title">Map Service</div>
+                        <div class="alert-text">GeoJSON loading issues detected</div>
+                    </div>
+                    <div class="alert-card alert-warning">
+                        <div class="alert-title">Data Quality</div>
+                        <div class="alert-text">Missing data for 3 wards this month</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Quick Actions Section -->
+            <div class="sidebar-section">
+                <h4>⚡ Quick Actions</h4>
+                <button class="quick-action-btn" onclick="exportQuickReport()">
+                    <span>📊</span> Export Current View
+                </button>
+                <button class="quick-action-btn" onclick="refreshAllData()">
+                    <span>🔄</span> Refresh All Data
+                </button>
+                <button class="quick-action-btn" onclick="showAllWardsMap()">
+                    <span>🗺️</span> Show All Wards
+                </button>
+                <button class="quick-action-btn" onclick="clearAllFilters()">
+                    <span>🧹</span> Clear Filters
+                </button>
+                <button class="quick-action-btn" onclick="downloadDebugInfo()">
+                    <span>🔧</span> Debug Info
+                </button>
+            </div>
+
+            <!-- Data Summary Section -->
+            <div class="sidebar-section">
+                <h4>📈 Dataset Overview</h4>
+                <div class="stat-row">
+                    <span class="stat-label">Time Period:</span>
+                    <span class="stat-value" id="sidebarPeriod">2020-2024</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Total Records:</span>
+                    <span class="stat-value" id="sidebarRecords">33,950</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Ward Coverage:</span>
+                    <span class="stat-value" id="sidebarCoverage">679 wards</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Algorithm:</span>
+                    <span class="stat-value">Enhanced Adaptive</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Version:</span>
+                    <span class="stat-value">v2.0.1</span>
+                </div>
+            </div>
+
+            <!-- Performance Metrics -->
+            <div class="sidebar-section">
+                <h4>📊 Performance</h4>
+                <div class="stat-row">
+                    <span class="stat-label">Avg Response Time:</span>
+                    <span class="stat-value" id="avgResponseTime">~150ms</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Cache Hit Rate:</span>
+                    <span class="stat-value" id="cacheHitRate">87%</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Memory Usage:</span>
+                    <span class="stat-value" id="memoryUsage">142MB</span>
+                </div>
+            </div>
+
+            <!-- Footer Info -->
+            <div class="sidebar-section" style="margin-bottom: 10px;">
+                <h4>ℹ️ About</h4>
+                <div style="font-size: 11px; line-height: 1.4; color: var(--secondary-text);">
+                    <p>London Police Intelligence Dashboard</p>
+                    <p>Enhanced Adaptive Resource Allocation</p>
+                    <p>Real-time Crime Pattern Analysis</p>
+                    <p style="margin-top: 8px; color: var(--accent-color);">
+                        Built with Flask, Leaflet & Plotly
+                    </p>
+                </div>
+            </div>
+        </div>">📊</span>
+                        Overview Dashboard
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="#" class="nav-link" data-screen="allocation">
+                        <span class="nav-icon">👮</span>
+                        Resource Allocation
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="#" class="nav-link" data-screen="predictions">
+                        <span class="nav-icon">🔮</span>
+                        Crime Predictions
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="#" class="nav-link" data-screen="analytics">
+                        <span class="nav-icon">📈</span>
+                        Analytics & Trends
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="#" class="nav-link" data-screen="map">
+                        <span class="nav-icon">🗺️</span>
+                        Interactive Map
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="#" class="nav-link" data-screen="performance">
+                        <span class="nav-icon">⚡</span>
+                        Model Performance
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="#" class="nav-link" data-screen="reports">
+                        <span class="nav-icon">📋</span>
+                        Reports & Export
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a href="#" class="nav-link" data-screen="settings">
+                        <span class="nav-icon">⚙️</span>
+                        Settings
+                    </a>
+                </li>
+            </ul>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Overview Dashboard Screen -->
+            <div class="screen active" id="overview">
+                <div class="content-header">
+                    <h2>📊 Overview Dashboard</h2>
+                    <p>Real-time summary of police resource allocation and crime patterns</p>
+                </div>
+                <div class="content-body">
+                    <div id="overviewAlerts"></div>
+                    
+                    <!-- KPI Cards -->
+                    <div class="kpi-grid">
+                        <div class="kpi-card">
+                            <div class="kpi-value" id="totalWards">---</div>
+                            <div class="kpi-label">Total Wards</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-value" id="totalOfficers">---</div>
+                            <div class="kpi-label">Deployed Officers</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-value" id="totalCrimes">---</div>
+                            <div class="kpi-label">Total Crimes</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-value" id="predictionAccuracy">---</div>
+                            <div class="kpi-label">Prediction Accuracy</div>
+                        </div>
+                    </div>
+
+                    <!-- Quick Stats -->
+                    <div class="dashboard-grid">
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3 class="card-title">System Status</h3>
+                                <span class="card-icon">🔧</span>
+                            </div>
+                            <div id="systemStatus">Loading...</div>
+                        </div>
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Recent Activity</h3>
+                                <span class="card-icon">📝</span>
+                            </div>
+                            <div id="recentActivity">Loading...</div>
+                        </div>
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3 class="card-title">High-Risk Areas</h3>
+                                <span class="card-icon">⚠️</span>
+                            </div>
+                            <div id="highRiskAreas">Loading...</div>
+                        </div>
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Resource Efficiency</h3>
+                                <span class="card-icon">⚡</span>
+                            </div>
+                            <div id="resourceEfficiency">Loading...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Resource Allocation Screen -->
+            <div class="screen" id="allocation">
+                <div class="content-header">
+                    <h2>👮 Resource Allocation</h2>
+                    <p>Enhanced adaptive algorithm for police officer deployment</p>
+                </div>
+                <div class="content-body">
+                    <div class="controls-section">
+                        <div class="controls-grid">
+                            <div class="control-group">
+                                <label class="control-label">Year</label>
+                                <select class="control-input" id="allocationYear">
+                                    <option value="">Select Year</option>
+                                </select>
+                            </div>
+                            <div class="control-group">
+                                <label class="control-label">Month</label>
+                                <select class="control-input" id="allocationMonth">
+                                    <option value="">Select Month</option>
+                                </select>
+                            </div>
+                            <div class="control-group">
+                                <label class="control-label">Ward Filter</label>
+                                <input type="text" class="control-input" id="allocationWardFilter" placeholder="Type ward code...">
+                            </div>
+                            <div class="control-group">
+                                <label class="control-label">Actions</label>
+                                <button class="btn btn-primary" onclick="updateAllocationView()">
+                                    🔍 Update View
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="kpi-grid">
+                        <div class="kpi-card">
+                            <div class="kpi-value" id="allocTotalOfficers">---</div>
+                            <div class="kpi-label">Total Officers</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-value" id="allocAvgOfficers">---</div>
+                            <div class="kpi-label">Avg per Ward</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-value" id="allocHighRisk">---</div>
+                            <div class="kpi-label">High-Risk Wards</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-value" id="allocSurgeActive">---</div>
+                            <div class="kpi-label">Surge Activations</div>
+                        </div>
+                    </div>
+
+                    <div class="charts-container">
+                        <div class="chart-card">
+                            <div class="chart-title">Officer Allocation Distribution</div>
+                            <div id="allocationDistChart" style="height: 350px;"></div>
+                        </div>
+                        <div class="chart-card">
+                            <div class="chart-title">Risk Categories</div>
+                            <div id="riskCategoryChart" style="height: 350px;"></div>
+                        </div>
+                    </div>
+
+                    <div class="dashboard-card">
+                        <div class="card-header">
+                            <h3 class="card-title">Allocation Data Table</h3>
+                            <button class="btn btn-secondary" onclick="exportAllocationData()">
+                                📊 Export CSV
+                            </button>
+                        </div>
+                        <div id="allocationTableContainer">
+                            <div class="loading">
+                                <div class="spinner"></div>
+                                <p>Loading allocation data...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Crime Predictions Screen -->
+            <div class="screen" id="predictions">
+                <div class="content-header">
+                    <h2>🔮 Crime Predictions</h2>
+                    <p>AI-powered burglary prediction analysis</p>
+                </div>
+                <div class="content-body">
+                    <div class="controls-section">
+                        <div class="controls-grid">
+                            <div class="control-group">
+                                <label class="control-label">Select Ward</label>
+                                <select class="control-input" id="predictionWard">
+                                    <option value="">Loading wards...</option>
+                                </select>
+                            </div>
+                            <div class="control-group">
+                                <label class="control-label">Prediction Model</label>
+                                <select class="control-input" id="predictionModel">
+                                    <option value="ensemble">Ensemble (Recommended)</option>
+                                    <option value="tabnet">TabNet</option>
+                                    <option value="xgboost">XGBoost</option>
+                                </select>
+                            </div>
+                            <div class="control-group">
+                                <label class="control-label">Time Range</label>
+                                <select class="control-input" id="predictionTimeRange">
+                                    <option value="all">All Available</option>
+                                    <option value="last12">Last 12 Months</option>
+                                    <option value="last6">Last 6 Months</option>
+                                </select>
+                            </div>
+                            <div class="control-group">
+                                <label class="control-label">Actions</label>
+                                <button class="btn btn-primary" onclick="updatePredictionView()">
+                                    📈 Analyze Ward
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="charts-container">
+                        <div class="chart-card">
+                            <div class="chart-title">Actual vs Predicted Time Series</div>
+                            <div id="predictionTimeSeriesChart" style="height: 350px;"></div>
+                        </div>
+                        <div class="chart-card">
+                            <div class="chart-title">Prediction Accuracy Metrics</div>
+                            <div id="predictionAccuracyChart" style="height: 350px;"></div>
+                        </div>
+                    </div>
+
+                    <div class="dashboard-grid">
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Ward Details</h3>
+                                <span class="card-icon">🏘️</span>
+                            </div>
+                            <div id="wardDetailsContent">Select a ward to view details</div>
+                        </div>
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Error Analysis</h3>
+                                <span class="card-icon">📊</span>
+                            </div>
+                            <div id="errorAnalysisContent">Prediction errors and patterns</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Analytics & Trends Screen -->
+            <div class="screen" id="analytics">
+                <div class="content-header">
+                    <h2>📈 Analytics & Trends</h2>
+                    <p>Statistical analysis and correlation insights</p>
+                </div>
+                <div class="content-body">
+                    <div class="controls-section">
+                        <div class="controls-grid">
+                            <div class="control-group">
+                                <label class="control-label">X-Axis Variable</label>
+                                <select class="control-input" id="analyticsXVar">
+                                    <option value="crime_score">Crime Score</option>
+                                    <option value="house_price">House Price</option>
+                                    <option value="education_score">Education Score</option>
+                                    <option value="employment_score">Employment Score</option>
+                                    <option value="income_score">Income Score</option>
+                                </select>
+                            </div>
+                            <div class="control-group">
+                                <label class="control-label">Y-Axis Variable</label>
+                                <select class="control-input" id="analyticsYVar">
+                                    <option value="burglary_count">Burglary Count</option>
+                                    <option value="house_price">House Price</option>
+                                    <option value="crime_score">Crime Score</option>
+                                    <option value="education_score">Education Score</option>
+                                </select>
+                            </div>
+                            <div class="control-group">
+                                <label class="control-label">Date Range</label>
+                                <input type="date" class="control-input" id="analyticsStartDate">
+                            </div>
+                            <div class="control-group">
+                                <label class="control-label">End Date</label>
+                                <input type="date" class="control-input" id="analyticsEndDate">
+                            </div>
+                        </div>
+                        <button class="btn btn-primary" onclick="updateAnalyticsView()">
+                            📊 Generate Analysis
+                        </button>
+                    </div>
+
+                    <div class="charts-container">
+                        <div class="chart-card">
+                            <div class="chart-title">Correlation Analysis</div>
+                            <div id="correlationChart" style="height: 350px;"></div>
+                        </div>
+                        <div class="chart-card">
+                            <div class="chart-title">Time Series Trends</div>
+                            <div id="trendsChart" style="height: 350px;"></div>
+                        </div>
+                    </div>
+
+                    <div class="charts-container">
+                        <div class="chart-card">
+                            <div class="chart-title">Top Wards Analysis</div>
+                            <div id="topWardsChart" style="height: 350px;"></div>
+                        </div>
+                        <div class="chart-card">
+                            <div class="chart-title">Seasonal Patterns</div>
+                            <div id="seasonalChart" style="height: 350px;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Interactive Map Screen -->
+            <div class="screen" id="map">
+                <div class="content-header">
+                    <h2>🗺️ Interactive Map</h2>
+                    <p>Geographic visualization of crime patterns and resource allocation</p>
+                </div>
+                <div class="content-body">
+                    <div class="controls-section">
+                        <div class="controls-grid">
+                            <div class="control-group">
+                                <label class="control-label">Map Type</label>
+                                <select class="control-input" id="mapType">
+                                    <option value="allocation">Officer Allocation</option>
+                                    <option value="predictions">Crime Predictions</option>
+                                    <option value="risk">Risk Categories</option>
+                                </select>
+                            </div>
+                            <div class="control-group">
+                                <label class="control-label">Year</label>
+                                <select class="control-input" id="mapYear">
+                                    <option value="">Select Year</option>
+                                </select>
+                            </div>
+                            <div class="control-group">
+                                <label class="control-label">Month</label>
+                                <select class="control-input" id="mapMonth">
+                                    <option value="">Select Month</option>
+                                </select>
+                            </div>
+                            <div class="control-group">
+                                <label class="control-label">Actions</label>
+                                <button class="btn btn-primary" onclick="updateMapView()">
+                                    🗺️ Update Map
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="map-container">
+                        <div id="mapVisualization"></div>
+                    </div>
+
+                    <div class="dashboard-grid">
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Map Legend</h3>
+                                <span class="card-icon">🎨</span>
+                            </div>
+                            <div id="mapLegend">Select map type to view legend</div>
+                        </div>
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Selected Ward Info</h3>
+                                <span class="card-icon">📍</span>
+                            </div>
+                            <div id="selectedWardInfo">Click on a ward to view details</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Model Performance Screen -->
+            <div class="screen" id="performance">
+                <div class="content-header">
+                    <h2>⚡ Model Performance</h2>
+                    <p>Comprehensive evaluation of prediction models and algorithms</p>
+                </div>
+                <div class="content-body">
+                    <div class="kpi-grid">
+                        <div class="kpi-card">
+                            <div class="kpi-value" id="perfMAE">---</div>
+                            <div class="kpi-label">Mean Absolute Error</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-value" id="perfRMSE">---</div>
+                            <div class="kpi-label">Root Mean Square Error</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-value" id="perfR2">---</div>
+                            <div class="kpi-label">R² Score</div>
+                        </div>
+                        <div class="kpi-card">
+                            <div class="kpi-value" id="perfMAPE">---</div>
+                            <div class="kpi-label">Mean Absolute % Error</div>
+                        </div>
+                    </div>
+
+                    <div class="charts-container">
+                        <div class="chart-card">
+                            <div class="chart-title">Error Distribution</div>
+                            <div id="errorDistributionChart" style="height: 350px;"></div>
+                        </div>
+                        <div class="chart-card">
+                            <div class="chart-title">Model Comparison</div>
+                            <div id="modelComparisonChart" style="height: 350px;"></div>
+                        </div>
+                    </div>
+
+                    <div class="charts-container">
+                        <div class="chart-card">
+                            <div class="chart-title">Residual Analysis</div>
+                            <div id="residualChart" style="height: 350px;"></div>
+                        </div>
+                        <div class="chart-card">
+                            <div class="chart-title">Feature Importance</div>
+                            <div id="featureImportanceChart" style="height: 350px;"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Reports & Export Screen -->
+            <div class="screen" id="reports">
+                <div class="content-header">
+                    <h2>📋 Reports & Export</h2>
+                    <p>Generate comprehensive reports and export data</p>
+                </div>
+                <div class="content-body">
+                    <div class="dashboard-grid">
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Quick Reports</h3>
+                                <span class="card-icon">⚡</span>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 10px;">
+                                <button class="btn btn-primary" onclick="generateReport('allocation')">
+                                    📊 Allocation Summary
+                                </button>
+                                <button class="btn btn-primary" onclick="generateReport('performance')">
+                                    ⚡ Performance Report
+                                </button>
+                                <button class="btn btn-primary" onclick="generateReport('trends')">
+                                    📈 Trends Analysis
+                                </button>
+                            </div>
+                        </div>
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Data Export</h3>
+                                <span class="card-icon">💾</span>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 10px;">
+                                <button class="btn btn-secondary" onclick="exportData('allocation')">
+                                    📄 Export Allocation Data
+                                </button>
+                                <button class="btn btn-secondary" onclick="exportData('predictions')">
+                                    📄 Export Predictions
+                                </button>
+                                <button class="btn btn-secondary" onclick="exportData('all')">
+                                    📦 Export All Data
+                                </button>
+                            </div>
+                        </div>
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Scheduled Reports</h3>
+                                <span class="card-icon">⏰</span>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 10px;">
+                                <button class="btn btn-secondary" onclick="scheduleReport('daily')">
+                                    📅 Daily Summary
+                                </button>
+                                <button class="btn btn-secondary" onclick="scheduleReport('weekly')">
+                                    📅 Weekly Analysis
+                                </button>
+                                <button class="btn btn-secondary" onclick="scheduleReport('monthly')">
+                                    📅 Monthly Report
+                                </button>
+                            </div>
+                        </div>
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Custom Report Builder</h3>
+                                <span class="card-icon">🔧</span>
+                            </div>
+                            <div id="customReportBuilder">
+                                <div class="control-group">
+                                    <label class="control-label">Report Type</label>
+                                    <select class="control-input" id="reportType">
+                                        <option value="summary">Executive Summary</option>
+                                        <option value="detailed">Detailed Analysis</option>
+                                        <option value="comparative">Comparative Study</option>
+                                    </select>
+                                </div>
+                                <div class="control-group">
+                                    <label class="control-label">Date Range</label>
+                                    <input type="date" class="control-input" id="reportStartDate">
+                                </div>
+                                <button class="btn btn-primary" onclick="buildCustomReport()">
+                                    🔨 Build Report
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="dashboard-card">
+                        <div class="card-header">
+                            <h3 class="card-title">Report History</h3>
+                            <button class="btn btn-secondary" onclick="refreshReportHistory()">
+                                🔄 Refresh
+                            </button>
+                        </div>
+                        <div id="reportHistoryContainer">
+                            <div class="loading">
+                                <div class="spinner"></div>
+                                <p>Loading report history...</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings Screen -->
+            <div class="screen" id="settings">
+                <div class="content-header">
+                    <h2>⚙️ Settings</h2>
+                    <p>Configure dashboard preferences and system parameters</p>
+                </div>
+                <div class="content-body">
+                    <div class="dashboard-grid">
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Display Settings</h3>
+                                <span class="card-icon">🎨</span>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 15px;">
+                                <div class="control-group">
+                                    <label class="control-label">Theme</label>
+                                    <select class="control-input" id="themeSelect">
+                                        <option value="dark">Dark Theme</option>
+                                        <option value="light">Light Theme</option>
+                                        <option value="auto">Auto (System)</option>
+                                    </select>
+                                </div>
+                                <div class="control-group">
+                                    <label class="control-label">Refresh Rate (seconds)</label>
+                                    <select class="control-input" id="refreshRate">
+                                        <option value="30">30 seconds</option>
+                                        <option value="60">1 minute</option>
+                                        <option value="300">5 minutes</option>
+                                        <option value="0">Manual only</option>
+                                    </select>
+                                </div>
+                                <div class="control-group">
+                                    <label class="control-label">
+                                        <input type="checkbox" id="animationsEnabled" checked> 
+                                        Enable Animations
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Data Settings</h3>
+                                <span class="card-icon">💾</span>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 15px;">
+                                <div class="control-group">
+                                    <label class="control-label">Default Year</label>
+                                    <select class="control-input" id="defaultYear">
+                                        <option value="latest">Latest Available</option>
+                                        <option value="2024">2024</option>
+                                        <option value="2023">2023</option>
+                                    </select>
+                                </div>
+                                <div class="control-group">
+                                    <label class="control-label">Cache Duration (minutes)</label>
+                                    <select class="control-input" id="cacheDuration">
+                                        <option value="5">5 minutes</option>
+                                        <option value="15">15 minutes</option>
+                                        <option value="60">1 hour</option>
+                                    </select>
+                                </div>
+                                <button class="btn btn-secondary" onclick="clearCache()">
+                                    🗑️ Clear Cache
+                                </button>
+                            </div>
+                        </div>
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3 class="card-title">Notifications</h3>
+                                <span class="card-icon">🔔</span>
+                            </div>
+                            <div style="display: flex; flex-direction: column; gap: 15px;">
+                                <div class="control-group">
+                                    <label class="control-label">
+                                        <input type="checkbox" id="highRiskAlerts" checked> 
+                                        High-Risk Ward Alerts
+                                    </label>
+                                </div>
+                                <div class="control-group">
+                                    <label class="control-label">
+                                        <input type="checkbox" id="dataUpdateAlerts" checked> 
+                                        Data Update Notifications
+                                    </label>
+                                </div>
+                                <div class="control-group">
+                                    <label class="control-label">
+                                        <input type="checkbox" id="errorAlerts" checked> 
+                                        Error Notifications
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <h3 class="card-title">System Info</h3>
+                                <span class="card-icon">ℹ️</span>
+                            </div>
+                            <div id="systemInfo">
+                                <p><strong>Version:</strong> 2.0.0</p>
+                                <p><strong>Last Update:</strong> <span id="lastUpdate">Loading...</span></p>
+                                <p><strong>Data Status:</strong> <span id="dataStatus">Checking...</span></p>
+                                <p><strong>API Status:</strong> <span id="apiStatus">Connecting...</span></p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="dashboard-card">
+                        <div class="card-header">
+                            <h3 class="card-title">Advanced Settings</h3>
+                            <span class="card-icon">🔬</span>
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                            <div>
+                                <h4 style="color: var(--accent-color); margin-bottom: 15px;">Model Parameters</h4>
+                                <div class="control-group">
+                                    <label class="control-label">Prediction Confidence Threshold</label>
+                                    <input type="range" class="control-input" id="confidenceThreshold" min="0.1" max="1.0" step="0.1" value="0.8">
+                                    <span id="confidenceValue">0.8</span>
+                                </div>
+                                <div class="control-group">
+                                    <label class="control-label">Risk Category Boundaries</label>
+                                    <button class="btn btn-secondary" onclick="configureRiskBoundaries()">
+                                        ⚙️ Configure
+                                    </button>
+                                </div>
+                            </div>
+                            <div>
+                                <h4 style="color: var(--accent-color); margin-bottom: 15px;">Export Settings</h4>
+                                <div class="control-group">
+                                    <label class="control-label">Default Export Format</label>
+                                    <select class="control-input" id="exportFormat">
+                                        <option value="csv">CSV</option>
+                                        <option value="json">JSON</option>
+                                        <option value="excel">Excel</option>
+                                    </select>
+                                </div>
+                                <div class="control-group">
+                                    <label class="control-label">Include Metadata</label>
+                                    <input type="checkbox" id="includeMetadata" checked>
+                                </div>
+                            </div>
+                        </div>
+                        <button class="btn btn-primary" onclick="saveSettings()">
+                            💾 Save All Settings
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Chart Modal for Full-Screen View -->
+    <div class="chart-modal" id="chartModal">
+        <div class="chart-modal-content">
+            <button class="chart-modal-close" onclick="closeChartModal()">&times;</button>
+            <div id="modalChartContainer" style="width: 100%; height: 100%;"></div>
+        </div>
+    </div>
+
+    <!-- Tooltip -->
+    <div class="tooltip hidden" id="tooltip"></div>
+
+    <script>
+        // Global variables
+        let currentScreen = 'overview';
+        let sessionStartTime = Date.now();
+        let refreshCount = 0;
+        let dashboardData = {
+            allocation: null,
+            processed: null,
+            predictions: null,
+            summary: null
+        };
+        let refreshInterval = null;
+        let map = null;
+
+        // Initialize dashboard
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeDashboard();
+            loadInitialData();
+            setupEventListeners();
+            startAutoRefresh();
+        });
+
+        function initializeDashboard() {
+            console.log('🚀 Initializing London Police Intelligence Dashboard...');
+            
+            // Set current timestamp
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleString();
+            
+            // Initialize settings from localStorage
+            loadSettings();
+        }
+
+        function loadInitialData() {
+            Promise.all([
+                loadSummaryData(),
+                loadAllocationData(),
+                loadWardList()
+            ]).then(() => {
+                updateOverviewScreen();
+                showAlert('Dashboard loaded successfully!', 'success');
+            }).catch(error => {
+                console.error('Error loading initial data:', error);
+                showAlert('Error loading dashboard data', 'error');
+            });
+        }
+
+        function setupEventListeners() {
+            // Navigation
+            document.querySelectorAll('.nav-link').forEach(link => {
+                link.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    const screen = this.dataset.screen;
+                    switchScreen(screen);
+                });
+            });
+
+            // Settings sliders
+            const confidenceSlider = document.getElementById('confidenceThreshold');
+            if (confidenceSlider) {
+                confidenceSlider.addEventListener('input', function() {
+                    document.getElementById('confidenceValue').textContent = this.value;
+                });
+            }
+
+            // Real-time search filters
+            document.getElementById('allocationWardFilter')?.addEventListener('input', debounce(updateAllocationView, 500));
+        }
+
+        function switchScreen(screenName) {
+            // Hide all screens
+            document.querySelectorAll('.screen').forEach(screen => {
+                screen.classList.remove('active');
+            });
+
+            // Show selected screen
+            document.getElementById(screenName).classList.add('active');
+
+            // Update navigation
+            document.querySelectorAll('.nav-link').forEach(link => {
+                link.classList.remove('active');
+            });
+            document.querySelector(`[data-screen="${screenName}"]`).classList.add('active');
+
+            currentScreen = screenName;
+
+            // Load screen-specific data
+            loadScreenData(screenName);
+        }
+
+        function loadScreenData(screenName) {
+            switch(screenName) {
+                case 'overview':
+                    updateOverviewScreen();
+                    break;
+                case 'allocation':
+                    updateAllocationScreen();
+                    break;
+                case 'predictions':
+                    updatePredictionsScreen();
+                    break;
+                case 'analytics':
+                    updateAnalyticsScreen();
+                    break;
+                case 'map':
+                    updateMapScreen();
+                    break;
+                case 'performance':
+                    updatePerformanceScreen();
+                    break;
+                case 'reports':
+                    updateReportsScreen();
+                    break;
+                case 'settings':
+                    updateSettingsScreen();
+                    break;
+            }
+        }
+
+        // API Functions
+        async function apiCall(endpoint, params = {}) {
+            try {
+                const url = new URL(`/api/${endpoint}`, window.location.origin);
+                Object.keys(params).forEach(key => {
+                    if (params[key] !== null && params[key] !== '') {
+                        url.searchParams.append(key, params[key]);
+                    }
+                });
+
+                const response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return await response.json();
+            } catch (error) {
+                console.error(`API call failed for ${endpoint}:`, error);
+                updateConnectionStatus(false);
+                throw error;
+            }
+        }
+
+        async function loadSummaryData() {
+            try {
+                const data = await apiCall('summary');
+                dashboardData.summary = data;
+                updateConnectionStatus(true);
+                return data;
+            } catch (error) {
+                console.error('Error loading summary:', error);
+                return null;
+            }
+        }
+
+        async function loadAllocationData(filters = {}) {
+            try {
+                const data = await apiCall('allocation', filters);
+                dashboardData.allocation = data;
+                return data;
+            } catch (error) {
+                console.error('Error loading allocation data:', error);
+                return null;
+            }
+        }
+
+        async function loadStatistics(filters = {}) {
+            try {
+                return await apiCall('statistics', filters);
+            } catch (error) {
+                console.error('Error loading statistics:', error);
+                return null;
+            }
+        }
+
+        async function loadWardList() {
+            try {
+                const data = await apiCall('ward_list');
+                populateWardDropdowns(data.wards);
+                return data;
+            } catch (error) {
+                console.error('Error loading ward list:', error);
+                return null;
+            }
+        }
+
+        async function loadPerformanceMetrics() {
+            try {
+                return await apiCall('performance_metrics');
+            } catch (error) {
+                console.error('Error loading performance metrics:', error);
+                return null;
+            }
+        }
+
+        // Screen Update Functions
+        function updateOverviewScreen() {
+            loadStatistics().then(stats => {
+                if (stats) {
+                    updateKPIs(stats);
+                    updateSystemStatus(stats);
+                }
+            });
+        }
+
+        function updateAllocationScreen() {
+            populateYearMonthDropdowns('allocation');
+            updateAllocationView();
+        }
+
+        function updatePredictionsScreen() {
+            // Load ward list for predictions
+            loadWardList();
+        }
+
+        function updateAnalyticsScreen() {
+            // Set default date range
+            const endDate = new Date();
+            const startDate = new Date();
+            startDate.setFullYear(endDate.getFullYear() - 1);
+            
+            document.getElementById('analyticsStartDate').value = startDate.toISOString().split('T')[0];
+            document.getElementById('analyticsEndDate').value = endDate.toISOString().split('T')[0];
+        }
+
+        function updateMapScreen() {
+            populateYearMonthDropdowns('map');
+            initializeMap();
+            
+            // Set default values and update map
+            setTimeout(() => {
+                const yearSelect = document.getElementById('mapYear');
+                const monthSelect = document.getElementById('mapMonth');
+                
+                if (yearSelect && yearSelect.options.length > 1) {
+                    yearSelect.value = '2024';  // Default to 2024
+                }
+                if (monthSelect && monthSelect.options.length > 1) {
+                    monthSelect.value = '9';  // Default to September
+                }
+                
+                updateMapView();
+            }, 500);
+        }
+
+        function updatePerformanceScreen() {
+            loadPerformanceMetrics().then(metrics => {
+                if (metrics) {
+                    updatePerformanceKPIs(metrics);
+                    createPerformanceCharts(metrics);
+                }
+            });
+        }
+
+        function updateReportsScreen() {
+            // Load report history
+            refreshReportHistory();
+        }
+
+        function updateSettingsScreen() {
+            // Update system info
+            updateSystemInfo();
+        }
+
+        // Specific Update Functions
+        function updateKPIs(stats) {
+            if (stats.allocation) {
+                document.getElementById('totalWards').textContent = stats.allocation.total_wards || '---';
+                document.getElementById('totalOfficers').textContent = Math.round(stats.allocation.total_officers || 0);
+                
+                // ✅ NEW: Use total_crimes from allocation data (sum of actual values)
+                document.getElementById('totalCrimes').textContent = stats.allocation.total_crimes?.toLocaleString() || '---';
+                
+                // ✅ NEW: Update sidebar stats
+                document.getElementById('sidebarWards').textContent = stats.allocation.total_wards || '---';
+                document.getElementById('sidebarOfficers').textContent = Math.round(stats.allocation.total_officers || 0).toLocaleString();
+                document.getElementById('sidebarHighRisk').textContent = stats.allocation.high_risk_wards || '---';
+            }
+            
+            if (stats.predictions) {
+                document.getElementById('predictionAccuracy').textContent = `${stats.predictions.prediction_accuracy?.toFixed(1) || '---'}%`;
+                
+                // ✅ NEW: Use prediction data for crimes if allocation doesn't have it
+                if (!stats.allocation || !stats.allocation.total_crimes) {
+                    document.getElementById('totalCrimes').textContent = stats.predictions.total_actual_crimes?.toLocaleString() || '---';
+                }
+            }
+            
+            // ✅ NEW: Update sidebar last update time
+            document.getElementById('sidebarLastUpdate').textContent = new Date().toLocaleTimeString();
+        }
+
+        // ✅ NEW: Quick action functions for sidebar
+        function exportQuickReport() {
+            showAlert('Exporting current view data...', 'success');
+            
+            // Get current screen data and export
+            const currentData = getCurrentScreenData();
+            if (currentData) {
+                const csv = convertToCSV(currentData);
+                downloadCSV(csv, `${currentScreen}_data_${new Date().toISOString().split('T')[0]}.csv`);
+                showAlert('Data exported successfully!', 'success');
+            } else {
+                showAlert('No data available to export', 'warning');
+            }
+        }
+
+        function showAllWardsMap() {
+            // Switch to map screen and show all wards
+            switchScreen('map');
+            setTimeout(() => {
+                const mapYear = document.getElementById('mapYear');
+                const mapMonth = document.getElementById('mapMonth');
+                
+                if (mapYear) mapYear.value = '';  // Show all years
+                if (mapMonth) mapMonth.value = '';  // Show all months
+                
+                updateMapView();
+                showAlert('Showing all wards on map', 'success');
+            }, 500);
+        }
+
+        function getCurrentScreenData() {
+            // Return current screen's data for export
+            switch(currentScreen) {
+                case 'allocation':
+                    return dashboardData.allocation?.data;
+                case 'predictions':
+                    return dashboardData.predictions;
+                default:
+                    return null;
+            }
+        }
+
+        function updateAllocationView() {
+            const year = document.getElementById('allocationYear')?.value;
+            const month = document.getElementById('allocationMonth')?.value;
+            const wardFilter = document.getElementById('allocationWardFilter')?.value;
+            
+            const filters = {};
+            if (year) filters.year = year;
+            if (month) filters.month = month;
+            if (wardFilter) filters.ward_filter = wardFilter;
+            
+            Promise.all([
+                loadAllocationData(filters),
+                loadStatistics(filters)
+            ]).then(([allocationData, stats]) => {
+                if (stats && stats.allocation) {
+                    updateAllocationKPIs(stats.allocation);
+                }
+                if (allocationData) {
+                    createAllocationCharts(allocationData.data);
+                    createAllocationTable(allocationData.data);
+                }
+            });
+        }
+
+        function updateAllocationKPIs(stats) {
+            document.getElementById('allocTotalOfficers').textContent = Math.round(stats.total_officers || 0);
+            document.getElementById('allocAvgOfficers').textContent = (stats.avg_officers_per_ward || 0).toFixed(1);
+            document.getElementById('allocHighRisk').textContent = stats.high_risk_wards || 0;
+            document.getElementById('allocSurgeActive').textContent = stats.surge_activations || 0;
+        }
+
+        function updatePerformanceKPIs(metrics) {
+            document.getElementById('perfMAE').textContent = (metrics.metrics.mae || 0).toFixed(3);
+            document.getElementById('perfRMSE').textContent = (metrics.metrics.rmse || 0).toFixed(3);
+            document.getElementById('perfR2').textContent = (metrics.metrics.r_squared || 0).toFixed(3);
+            document.getElementById('perfMAPE').textContent = `${(metrics.metrics.mape || 0).toFixed(1)}%`;
+        }
+
+        function updatePredictionView() {
+            const wardCode = document.getElementById('predictionWard')?.value;
+            if (!wardCode) return;
+            
+            apiCall(`predictions/${wardCode}`).then(data => {
+                if (data) {
+                    createPredictionTimeSeriesChart(data.data);
+                    updateWardDetails(data);
+                }
+            });
+        }
+
+        function updateAnalyticsView() {
+            const xVar = document.getElementById('analyticsXVar')?.value;
+            const yVar = document.getElementById('analyticsYVar')?.value;
+            const startDate = document.getElementById('analyticsStartDate')?.value;
+            const endDate = document.getElementById('analyticsEndDate')?.value;
+            
+            Promise.all([
+                apiCall('correlation', { x: xVar, y: yVar }),
+                apiCall('charts/time_series', { type: 'burglary' }),
+                apiCall('charts/top_wards', { metric: 'burglary' })
+            ]).then(([correlation, timeSeries, topWards]) => {
+                if (correlation) createCorrelationChart(correlation);
+                if (timeSeries) createTimeSeriesChart(timeSeries);
+                if (topWards) createTopWardsChart(topWards);
+            });
+        }
+
+        function updateMapView() {
+            const mapType = document.getElementById('mapType')?.value;
+            const year = document.getElementById('mapYear')?.value;
+            const month = document.getElementById('mapMonth')?.value;
+            
+            apiCall('map/choropleth', { type: mapType, year, month }).then(data => {
+                if (data && map) {
+                    updateChoroplethMap(data);
+                }
+            });
+        }
+
+        // Chart Creation Functions
+        function createAllocationCharts(data) {
+            // Officer allocation distribution histogram
+            const officers = data.map(d => d.allocated_officers || 0);
+            const distTrace = {
+                x: officers,
+                type: 'histogram',
+                nbinsx: 20,
+                marker: { color: '#64ffda', opacity: 0.8 }
+            };
+            
+            Plotly.newPlot('allocationDistChart', [distTrace], {
+                title: 'Officer Allocation Distribution',
+                xaxis: { title: 'Officers per Ward' },
+                yaxis: { title: 'Frequency' },
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                font: { color: '#e0e6ed' }
+            });
+            
+            // Risk category pie chart
+            const riskCounts = {};
+            data.forEach(d => {
+                const risk = d.risk_category || 'Unknown';
+                riskCounts[risk] = (riskCounts[risk] || 0) + 1;
+            });
+            
+            const pieTrace = {
+                labels: Object.keys(riskCounts),
+                values: Object.values(riskCounts),
+                type: 'pie',
+                marker: {
+                    colors: ['#64ffda', '#e74c3c', '#f39c12', '#f1c40f', '#2ecc71']
+                }
+            };
+            
+            Plotly.newPlot('riskCategoryChart', [pieTrace], {
+                title: 'Risk Category Distribution',
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                font: { color: '#e0e6ed' }
+            });
+        }
+
+        function createAllocationTable(data) {
+            const container = document.getElementById('allocationTableContainer');
+            if (!data || data.length === 0) {
+                container.innerHTML = '<p>No allocation data available</p>';
+                return;
+            }
+            
+            const sampleData = data.slice(0, 100); // Show first 100 rows
+            
+            let tableHTML = `
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Ward Code</th>
+                            <th>Year</th>
+                            <th>Month</th>
+                            <th>Officers</th>
+                            <th>Predicted Crime</th>
+                            <th>Risk Category</th>
+                            <th>Risk Score</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+            
+            sampleData.forEach(row => {
+                tableHTML += `
+                    <tr>
+                        <td>${row.ward_code || 'N/A'}</td>
+                        <td>${row.year || 'N/A'}</td>
+                        <td>${row.month || 'N/A'}</td>
+                        <td>${Math.round(row.allocated_officers || 0)}</td>
+                        <td>${(row.burglary_count || 0).toFixed(1)}</td>
+                        <td>${row.risk_category || 'N/A'}</td>
+                        <td>${(row.adaptive_risk_score || 0).toFixed(3)}</td>
+                    </tr>
+                `;
+            });
+            
+            tableHTML += '</tbody></table>';
+            
+            if (data.length > 100) {
+                tableHTML += `<p style="margin-top: 10px; color: var(--secondary-text);">
+                    Showing first 100 of ${data.length} records. 
+                    <button class="btn btn-secondary" onclick="exportAllocationData()">Export All</button>
+                </p>`;
+            }
+            
+            container.innerHTML = tableHTML;
+        }
+
+        function createPredictionTimeSeriesChart(data) {
+            const dates = data.map(d => d.date);
+            const actual = data.map(d => d.actual || 0);
+            const predicted = data.map(d => d.pred_ensemble || 0);
+            
+            const actualTrace = {
+                x: dates,
+                y: actual,
+                type: 'scatter',
+                mode: 'lines+markers',
+                name: 'Actual',
+                line: { color: '#64ffda' }
+            };
+            
+            const predictedTrace = {
+                x: dates,
+                y: predicted,
+                type: 'scatter',
+                mode: 'lines+markers',
+                name: 'Predicted',
+                line: { color: '#e74c3c' }
+            };
+            
+            Plotly.newPlot('predictionTimeSeriesChart', [actualTrace, predictedTrace], {
+                title: 'Actual vs Predicted Crime',
+                xaxis: { title: 'Date' },
+                yaxis: { title: 'Crime Count' },
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                font: { color: '#e0e6ed' }
+            });
+        }
+
+        function createCorrelationChart(correlationData) {
+            const trace = {
+                x: correlationData.data.map(d => d[correlationData.x_variable]),
+                y: correlationData.data.map(d => d[correlationData.y_variable]),
+                type: 'scatter',
+                mode: 'markers',
+                marker: { 
+                    color: '#64ffda',
+                    size: 8,
+                    opacity: 0.6
+                },
+                text: correlationData.data.map(d => d.ward_name || 'Unknown'),
+                hovertemplate: '%{text}<br>%{x}<br>%{y}<extra></extra>'
+            };
+            
+            Plotly.newPlot('correlationChart', [trace], {
+                title: `${correlationData.y_variable} vs ${correlationData.x_variable} (r=${correlationData.correlation.toFixed(3)})`,
+                xaxis: { title: correlationData.x_variable },
+                yaxis: { title: correlationData.y_variable },
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                font: { color: '#e0e6ed' }
+            });
+        }
+
+        function createTimeSeriesChart(timeSeriesData) {
+            const trace = {
+                x: timeSeriesData.data.map(d => d.date),
+                y: timeSeriesData.data.map(d => d.burglary_count),
+                type: 'scatter',
+                mode: 'lines',
+                line: { color: '#64ffda', width: 3 }
+            };
+            
+            Plotly.newPlot('trendsChart', [trace], {
+                title: timeSeriesData.title,
+                xaxis: { title: timeSeriesData.x_label },
+                yaxis: { title: timeSeriesData.y_label },
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                font: { color: '#e0e6ed' }
+            });
+        }
+
+        function createTopWardsChart(topWardsData) {
+            const trace = {
+                x: topWardsData.data.map(d => d.ward_name || d.ward_code),
+                y: topWardsData.data.map(d => d.burglary_count),
+                type: 'bar',
+                marker: { color: '#64ffda' }
+            };
+            
+            Plotly.newPlot('topWardsChart', [trace], {
+                title: topWardsData.title,
+                xaxis: { title: 'Ward' },
+                yaxis: { title: 'Average Burglary Count' },
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                font: { color: '#e0e6ed' }
+            });
+        }
+
+        function createPerformanceCharts(metrics) {
+            // Error distribution pie chart
+            const errorLabels = Object.keys(metrics.error_distribution);
+            const errorValues = Object.values(metrics.error_distribution);
+            
+            const errorTrace = {
+                labels: errorLabels,
+                values: errorValues,
+                type: 'pie',
+                marker: {
+                    colors: ['#2ecc71', '#f1c40f', '#e74c3c']
+                }
+            };
+            
+            Plotly.newPlot('errorDistributionChart', [errorTrace], {
+                title: 'Error Magnitude Distribution',
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                font: { color: '#e0e6ed' }
+            });
+            
+            // Model comparison (placeholder)
+            const modelTrace = {
+                x: ['MAE', 'RMSE', 'R²', 'MAPE'],
+                y: [metrics.metrics.mae, metrics.metrics.rmse, metrics.metrics.r_squared, metrics.metrics.mape],
+                type: 'bar',
+                marker: { color: '#64ffda' }
+            };
+            
+            Plotly.newPlot('modelComparisonChart', [modelTrace], {
+                title: 'Model Performance Metrics',
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                font: { color: '#e0e6ed' }
+            });
+        }
+
+        // Map Functions
+        function initializeMap() {
+            if (map) return;
+            
+            const mapContainer = document.getElementById('mapVisualization');
+            mapContainer.innerHTML = '<div id="leafletMap" style="height: 100%; width: 100%;"></div>';
+            
+            
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                attribution: '© OpenStreetMap contributors, © CartoDB',
+                subdomains: 'abcd',
+                maxZoom: 19
+            }).addTo(map);
+        }
+
+        function updateChoroplethMap(data) {
+            // This would integrate with actual GeoJSON data
+            // For now, create a simple visualization
+            console.log('Updating choropleth map with:', data);
+        }
+
+        // Utility Functions
+        function populateYearMonthDropdowns(prefix) {
+            if (!dashboardData.summary) return;
+            
+            const yearSelect = document.getElementById(`${prefix}Year`);
+            const monthSelect = document.getElementById(`${prefix}Month`);
+            
+            if (!yearSelect || !monthSelect) return;
+            
+            // Populate years (2020-2024)
+            yearSelect.innerHTML = '<option value="">Select Year</option>';
+            for (let year = 2020; year <= 2024; year++) {
+                const option = document.createElement('option');
+                option.value = year;
+                option.textContent = year;
+                yearSelect.appendChild(option);
+            }
+            
+            // Populate months
+            monthSelect.innerHTML = '<option value="">Select Month</option>';
+            const months = [
+                'January', 'February', 'March', 'April', 'May', 'June',
+                'July', 'August', 'September', 'October', 'November', 'December'
+            ];
+            months.forEach((month, index) => {
+                const option = document.createElement('option');
+                option.value = index + 1;
+                option.textContent = month;
+                monthSelect.appendChild(option);
+            });
+        }
+
+        function populateWardDropdowns(wards) {
+            const wardSelects = document.querySelectorAll('select[id$="Ward"], select[id*="ward"]');
+            
+            wardSelects.forEach(select => {
+                if (select.id === 'predictionWard') {
+                    select.innerHTML = '<option value="">Select Ward</option>';
+                    wards.forEach(ward => {
+                        const option = document.createElement('option');
+                        option.value = ward.ward_code;
+                        option.textContent = `${ward.ward_code} - ${ward.ward_name || 'Unknown'}`;
+                        select.appendChild(option);
+                    });
+                }
+            });
+        }
+
+        function updateSystemStatus(stats) {
+            const statusDiv = document.getElementById('systemStatus');
+            if (!statusDiv) return;
+            
+            const dataLoaded = stats && Object.keys(stats).length > 0;
+            
+            statusDiv.innerHTML = `
+                <div style="display: flex; flex-direction: column; gap: 10px;">
+                    <div style="display: flex; justify-content: space-between;">
+                        <span>Data Connection:</span>
+                        <span style="color: ${dataLoaded ? 'var(--success-color)' : 'var(--danger-color)'}">
+                            ${dataLoaded ? '🟢 Connected' : '🔴 Disconnected'}
+                        </span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span>Last Update:</span>
+                        <span>${new Date().toLocaleTimeString()}</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span>Records Loaded:</span>
+                        <span>${stats?.allocation?.total_wards || 0} wards</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        function updateConnectionStatus(isOnline) {
+            const statusIndicator = document.getElementById('statusIndicator');
+            const statusText = document.getElementById('statusText');
+            
+            if (isOnline) {
+                statusIndicator.className = 'status-indicator status-online';
+                statusText.textContent = 'Online';
+            } else {
+                statusIndicator.className = 'status-indicator status-offline';
+                statusText.textContent = 'Offline';
+            }
+        }
+
+        function updateWardDetails(wardData) {
+            const container = document.getElementById('wardDetailsContent');
+            if (!container) return;
+            
+            container.innerHTML = `
+                <h4 style="color: var(--accent-color); margin-bottom: 15px;">
+                    ${wardData.ward_name || wardData.ward_code}
+                </h4>
+                <div style="display: flex; flex-direction: column; gap: 10px;">
+                    <div><strong>Ward Code:</strong> ${wardData.ward_code}</div>
+                    <div><strong>Total Records:</strong> ${wardData.record_count}</div>
+                    <div><strong>Avg Actual Crime:</strong> ${(wardData.data.reduce((sum, d) => sum + (d.actual || 0), 0) / wardData.data.length).toFixed(2)}</div>
+                    <div><strong>Avg Predicted:</strong> ${(wardData.data.reduce((sum, d) => sum + (d.pred_ensemble || 0), 0) / wardData.data.length).toFixed(2)}</div>
+                    <div><strong>Latest Data:</strong> ${wardData.data[wardData.data.length - 1]?.date || 'N/A'}</div>
+                </div>
+            `;
+        }
+
+        function updateSystemInfo() {
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleString();
+            document.getElementById('dataStatus').textContent = dashboardData.summary ? 'Loaded' : 'Not Loaded';
+            document.getElementById('apiStatus').textContent = 'Connected';
+        }
+
+        // Export and Report Functions
+        function exportAllocationData() {
+            if (!dashboardData.allocation || !dashboardData.allocation.data) {
+                showAlert('No allocation data to export', 'warning');
+                return;
+            }
+            
+            const data = dashboardData.allocation.data;
+            const csv = convertToCSV(data);
+            downloadCSV(csv, 'allocation_data.csv');
+            showAlert('Allocation data exported successfully!', 'success');
+        }
+
+        function exportData(type) {
+            let data, filename;
+            
+            switch(type) {
+                case 'allocation':
+                    data = dashboardData.allocation?.data;
+                    filename = 'police_allocation_data.csv';
+                    break;
+                case 'predictions':
+                    data = dashboardData.predictions;
+                    filename = 'crime_predictions.csv';
+                    break;
+                case 'all':
+                    // Combine all available data
+                    data = {
+                        allocation: dashboardData.allocation?.data,
+                        summary: dashboardData.summary
+                    };
+                    filename = 'dashboard_data.json';
+                    downloadJSON(data, filename);
+                    showAlert('All data exported successfully!', 'success');
+                    return;
+            }
+            
+            if (!data) {
+                showAlert(`No ${type} data available to export`, 'warning');
+                return;
+            }
+            
+            const csv = convertToCSV(data);
+            downloadCSV(csv, filename);
+            showAlert(`${type} data exported successfully!`, 'success');
+        }
+
+        function generateReport(type) {
+            showAlert(`Generating ${type} report...`, 'success');
+            
+            // Simulate report generation
+            setTimeout(() => {
+                const reportData = {
+                    type: type,
+                    generated: new Date().toISOString(),
+                    summary: dashboardData.summary,
+                    data: dashboardData.allocation?.data?.slice(0, 10) // Sample data
+                };
+                
+                downloadJSON(reportData, `${type}_report_${new Date().toISOString().split('T')[0]}.json`);
+                showAlert(`${type} report generated and downloaded!`, 'success');
+            }, 2000);
+        }
+
+        function scheduleReport(frequency) {
+            showAlert(`${frequency} reports scheduled successfully!`, 'success');
+            // This would typically integrate with a backend scheduling system
+        }
+
+        function buildCustomReport() {
+            const reportType = document.getElementById('reportType')?.value;
+            const startDate = document.getElementById('reportStartDate')?.value;
+            
+            if (!reportType) {
+                showAlert('Please select a report type', 'warning');
+                return;
+            }
+            
+            showAlert(`Building custom ${reportType} report...`, 'success');
+            
+            // Simulate custom report building
+            setTimeout(() => {
+                const customReport = {
+                    type: reportType,
+                    dateRange: { start: startDate, end: new Date().toISOString() },
+                    generated: new Date().toISOString(),
+                    data: dashboardData.summary
+                };
+                
+                downloadJSON(customReport, `custom_${reportType}_report.json`);
+                showAlert('Custom report generated!', 'success');
+            }, 3000);
+        }
+
+        function refreshReportHistory() {
+            const container = document.getElementById('reportHistoryContainer');
+            if (!container) return;
+            
+            // Simulate loading report history
+            container.innerHTML = `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Loading report history...</p>
+                </div>
+            `;
+            
+            setTimeout(() => {
+                container.innerHTML = `
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Report Type</th>
+                                <th>Generated</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Allocation Summary</td>
+                                <td>2024-12-16 10:30 AM</td>
+                                <td><span style="color: var(--success-color)">✓ Complete</span></td>
+                                <td><button class="btn btn-secondary">Download</button></td>
+                            </tr>
+                            <tr>
+                                <td>Performance Report</td>
+                                <td>2024-12-15 09:15 AM</td>
+                                <td><span style="color: var(--success-color)">✓ Complete</span></td>
+                                <td><button class="btn btn-secondary">Download</button></td>
+                            </tr>
+                            <tr>
+                                <td>Weekly Analysis</td>
+                                <td>2024-12-14 08:00 AM</td>
+                                <td><span style="color: var(--warning-color)">⏳ Processing</span></td>
+                                <td><button class="btn btn-secondary" disabled>Wait</button></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                `;
+            }, 1000);
+        }
+
+        // Settings Functions
+        function loadSettings() {
+            const settings = JSON.parse(localStorage.getItem('dashboardSettings') || '{}');
+            
+            // Apply theme
+            if (settings.theme) {
+                document.getElementById('themeSelect').value = settings.theme;
+            }
+            
+            // Apply refresh rate
+            if (settings.refreshRate) {
+                document.getElementById('refreshRate').value = settings.refreshRate;
+                updateAutoRefresh(settings.refreshRate);
+            }
+            
+            // Apply other settings
+            Object.keys(settings).forEach(key => {
+                const element = document.getElementById(key);
+                if (element) {
+                    if (element.type === 'checkbox') {
+                        element.checked = settings[key];
+                    } else {
+                        element.value = settings[key];
+                    }
+                }
+            });
+        }
+
+        function saveSettings() {
+            const settings = {
+                theme: document.getElementById('themeSelect')?.value,
+                refreshRate: document.getElementById('refreshRate')?.value,
+                defaultYear: document.getElementById('defaultYear')?.value,
+                cacheDuration: document.getElementById('cacheDuration')?.value,
+                exportFormat: document.getElementById('exportFormat')?.value,
+                confidenceThreshold: document.getElementById('confidenceThreshold')?.value,
+                animationsEnabled: document.getElementById('animationsEnabled')?.checked,
+                highRiskAlerts: document.getElementById('highRiskAlerts')?.checked,
+                dataUpdateAlerts: document.getElementById('dataUpdateAlerts')?.checked,
+                errorAlerts: document.getElementById('errorAlerts')?.checked,
+                includeMetadata: document.getElementById('includeMetadata')?.checked
+            };
+            
+            localStorage.setItem('dashboardSettings', JSON.stringify(settings));
+            
+            // Apply refresh rate immediately
+            updateAutoRefresh(settings.refreshRate);
+            
+            showAlert('Settings saved successfully!', 'success');
+        }
+
+        function clearCache() {
+            dashboardData = {
+                allocation: null,
+                processed: null,
+                predictions: null,
+                summary: null
+            };
+            
+            localStorage.removeItem('dashboardCache');
+            showAlert('Cache cleared successfully!', 'success');
+            
+            // Reload data
+            loadInitialData();
+        }
+
+        function configureRiskBoundaries() {
+            showAlert('Risk boundary configuration panel would open here', 'success');
+        }
+
+        // Utility Functions
+        function convertToCSV(data) {
+            if (!Array.isArray(data) || data.length === 0) return '';
+            
+            const headers = Object.keys(data[0]);
+            const csvRows = [headers.join(',')];
+            
+            data.forEach(row => {
+                const values = headers.map(header => {
+                    const value = row[header];
+                    return typeof value === 'string' ? `"${value}"` : value;
+                });
+                csvRows.push(values.join(','));
+            });
+            
+            return csvRows.join('\n');
+        }
+
+        function downloadCSV(csv, filename) {
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            window.URL.revokeObjectURL(url);
+        }
+
+        function downloadJSON(data, filename) {
+            const json = JSON.stringify(data, null, 2);
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            window.URL.revokeObjectURL(url);
+        }
+
+        function showAlert(message, type = 'success') {
+            // Remove existing alerts
+            document.querySelectorAll('.alert').forEach(alert => alert.remove());
+            
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${type}`;
+            alertDiv.innerHTML = `
+                <span>${getAlertIcon(type)}</span>
+                <span>${message}</span>
+            `;
+            
+            // Add to current screen
+            const currentScreenElement = document.querySelector('.screen.active .content-body');
+            if (currentScreenElement) {
+                currentScreenElement.insertBefore(alertDiv, currentScreenElement.firstChild);
+            }
+            
+            // Auto-remove after 5 seconds
+            setTimeout(() => {
+                alertDiv.remove();
+            }, 5000);
+        }
+
+        function getAlertIcon(type) {
+            switch(type) {
+                case 'success': return '✅';
+                case 'error': return '❌';
+                case 'warning': return '⚠️';
+                default: return 'ℹ️';
+            }
+        }
+
+        function debounce(func, wait) {
+            let timeout;
+            return function executedFunction(...args) {
+                const later = () => {
+                    clearTimeout(timeout);
+                    func(...args);
+                };
+                clearTimeout(timeout);
+                timeout = setTimeout(later, wait);
+            };
+        }
+
+        // Auto-refresh functionality
+        function startAutoRefresh() {
+            const refreshRate = parseInt(document.getElementById('refreshRate')?.value || '60');
+            updateAutoRefresh(refreshRate);
+        }
+
+        function updateAutoRefresh(seconds) {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+            }
+            
+            if (seconds > 0) {
+                refreshInterval = setInterval(() => {
+                    refreshAllData();
+                }, seconds * 1000);
+            }
+        }
+
+        function refreshAllData() {
+            console.log('🔄 Refreshing all data...');
+            loadInitialData();
+            loadScreenData(currentScreen);
+        }
+
+        // Chart modal functions
+        function openChartModal(chartId) {
+            const modal = document.getElementById('chartModal');
+            const container = document.getElementById('modalChartContainer');
+            const originalChart = document.getElementById(chartId);
+            
+            if (originalChart && modal && container) {
+                // Clone the chart to modal
+                container.innerHTML = originalChart.innerHTML;
+                modal.classList.add('active');
+                
+                // Resize chart to fit modal
+                if (window.Plotly && originalChart.data) {
+                    Plotly.Plots.resize(container.firstElementChild);
+                }
+            }
+        }
+
+        function closeChartModal() {
+            const modal = document.getElementById('chartModal');
+            modal.classList.remove('active');
+        }
+
+        // Error handling
+        window.addEventListener('error', function(event) {
+            console.error('Dashboard error:', event.error);
+            showAlert('An unexpected error occurred. Please refresh the page.', 'error');
+        });
+
+        // Handle page visibility changes
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) {
+                // Page is hidden, pause auto-refresh
+                if (refreshInterval) {
+                    clearInterval(refreshInterval);
+                }
+            } else {
+                // Page is visible again, resume auto-refresh
+                startAutoRefresh();
+            }
+        });
+
+        console.log('✅ London Police Intelligence Dashboard initialized successfully!');
+    </script>
+</body>
+</html>
