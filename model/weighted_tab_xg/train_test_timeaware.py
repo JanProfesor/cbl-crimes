@@ -8,8 +8,10 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder, RobustScaler
 import warnings
 from data_preparer_noscale import DataPreparerNoLeakage
 from xgboost_model import XGBoostModel
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os
 
-# Import TabNet directly
 try:
     from pytorch_tabnet.tab_model import TabNetRegressor
     TABNET_AVAILABLE = True
@@ -204,6 +206,217 @@ def fix_data_issues(X, y):
     return X_df.values, y_fixed
 
 
+def find_optimal_ensemble_weights(pred1, pred2, y_true, metric='rmse', n_points=101):
+    """
+    Find optimal ensemble weights by grid search optimization
+    
+    Parameters:
+    pred1, pred2: predictions from model 1 and model 2
+    y_true: actual values
+    metric: optimization metric ('rmse', 'mae', or 'r2')
+    n_points: number of weight combinations to test
+    
+    Returns:
+    best_weight: optimal weight for model 1 (model 2 gets 1-best_weight)
+    best_score: best score achieved
+    all_weights: all tested weights
+    all_scores: all scores for plotting
+    """
+    weights = np.linspace(0, 1, n_points)
+    scores = []
+    
+    for w in weights:
+        ensemble_pred = w * pred1 + (1 - w) * pred2
+        
+        if metric == 'rmse':
+            score = np.sqrt(mean_squared_error(y_true, ensemble_pred))
+        elif metric == 'mae':
+            score = mean_absolute_error(y_true, ensemble_pred)
+        elif metric == 'r2':
+            score = -r2_score(y_true, ensemble_pred)  # Negative because we want to minimize
+        else:
+            raise ValueError(f"Unknown metric: {metric}")
+            
+        scores.append(score)
+    
+    best_idx = np.argmin(scores)
+    best_weight = weights[best_idx]
+    best_score = scores[best_idx]
+    
+    return best_weight, best_score, weights, scores
+
+
+def plot_ensemble_optimization(weights, scores, best_weight, best_score, metric='rmse', save_dir="feature_importance_plots"):
+    """
+    Plot the ensemble weight optimization curve
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    
+    plt.figure(figsize=(10, 6))
+    plt.plot(weights, scores, 'b-', linewidth=2, label=f'{metric.upper()} vs Weight')
+    plt.axvline(best_weight, color='red', linestyle='--', linewidth=2, 
+                label=f'Optimal Weight = {best_weight:.3f}')
+    plt.axhline(best_score, color='red', linestyle=':', alpha=0.7)
+    
+    plt.xlabel('TabNet Weight (XGBoost Weight = 1 - TabNet Weight)', fontsize=12)
+    plt.ylabel(f'Validation {metric.upper()}', fontsize=12)
+    plt.title(f'Ensemble Weight Optimization\nBest {metric.upper()}: {best_score:.4f} at TabNet Weight: {best_weight:.3f}', 
+              fontsize=14, fontweight='bold')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    plt.savefig(os.path.join(save_dir, 'ensemble_weight_optimization.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"✅ Ensemble optimization plot saved to {save_dir}/ensemble_weight_optimization.png")
+
+
+def plot_ensemble_analysis(weights, rmse_scores, mae_scores, r2_scores, 
+                          best_weight_rmse, best_weight_mae, best_weight_r2, 
+                          save_dir="feature_importance_plots"):
+    """
+    Plot comprehensive ensemble analysis across all metrics
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    
+    # RMSE plot
+    axes[0].plot(weights, rmse_scores, 'b-', linewidth=2)
+    axes[0].axvline(best_weight_rmse, color='red', linestyle='--', linewidth=2)
+    axes[0].set_xlabel('TabNet Weight')
+    axes[0].set_ylabel('RMSE')
+    axes[0].set_title(f'RMSE Optimization\nBest: {best_weight_rmse:.3f}')
+    axes[0].grid(True, alpha=0.3)
+    
+    # MAE plot
+    axes[1].plot(weights, mae_scores, 'g-', linewidth=2)
+    axes[1].axvline(best_weight_mae, color='red', linestyle='--', linewidth=2)
+    axes[1].set_xlabel('TabNet Weight')
+    axes[1].set_ylabel('MAE')
+    axes[1].set_title(f'MAE Optimization\nBest: {best_weight_mae:.3f}')
+    axes[1].grid(True, alpha=0.3)
+    
+    # R² plot (convert back to positive)
+    r2_scores_pos = [-score for score in r2_scores]
+    axes[2].plot(weights, r2_scores_pos, 'purple', linewidth=2)
+    axes[2].axvline(best_weight_r2, color='red', linestyle='--', linewidth=2)
+    axes[2].set_xlabel('TabNet Weight')
+    axes[2].set_ylabel('R²')
+    axes[2].set_title(f'R² Optimization\nBest: {best_weight_r2:.3f}')
+    axes[2].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, 'ensemble_comprehensive_analysis.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"✅ Comprehensive ensemble analysis saved to {save_dir}/ensemble_comprehensive_analysis.png")
+
+
+def plot_feature_importances(feature_names, tabnet_importances=None, xgb_importances=None, 
+                           ensemble_importances=None, tabnet_success=False, save_dir="results"):
+    """
+    Plot feature importances for TabNet, XGBoost, and ensemble models
+    """
+    # Create results directory if it doesn't exist
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Set up the plotting style
+    plt.style.use('default')
+    sns.set_palette("husl")
+    
+    # 1. TabNet Feature Importance Plot
+    if tabnet_success and tabnet_importances is not None:
+        # Get top 15 features for TabNet
+        tabnet_df = pd.DataFrame({
+            'Feature': feature_names,
+            'Importance': tabnet_importances
+        }).sort_values('Importance', ascending=False).head(15)
+        
+        plt.figure(figsize=(12, 8))
+        sns.barplot(data=tabnet_df, x='Importance', y='Feature', palette='viridis')
+        plt.title('TabNet Feature Importance (Top 15)', fontsize=16, fontweight='bold')
+        plt.xlabel('Feature Importance', fontsize=12)
+        plt.ylabel('Features', fontsize=12)
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, 'tabnet_feature_importance.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"✅ TabNet feature importance plot saved to {save_dir}/tabnet_feature_importance.png")
+    
+    # 2. XGBoost Feature Importance Plot
+    if xgb_importances is not None:
+        # Get top 15 features for XGBoost
+        xgb_df = pd.DataFrame({
+            'Feature': feature_names,
+            'Importance': xgb_importances
+        }).sort_values('Importance', ascending=False).head(15)
+        
+        plt.figure(figsize=(12, 8))
+        sns.barplot(data=xgb_df, x='Importance', y='Feature', palette='plasma')
+        plt.title('XGBoost Feature Importance (Top 15)', fontsize=16, fontweight='bold')
+        plt.xlabel('Feature Importance', fontsize=12)
+        plt.ylabel('Features', fontsize=12)
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, 'xgboost_feature_importance.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"✅ XGBoost feature importance plot saved to {save_dir}/xgboost_feature_importance.png")
+    
+    # 3. Ensemble Feature Importance Plot
+    if ensemble_importances is not None:
+        # Get top 15 features for Ensemble
+        ensemble_df = pd.DataFrame({
+            'Feature': feature_names,
+            'Importance': ensemble_importances
+        }).sort_values('Importance', ascending=False).head(15)
+        
+        plt.figure(figsize=(12, 8))
+        sns.barplot(data=ensemble_df, x='Importance', y='Feature', palette='coolwarm')
+        plt.title('Ensemble Feature Importance (Top 15)', fontsize=16, fontweight='bold')
+        plt.xlabel('Weighted Feature Importance', fontsize=12)
+        plt.ylabel('Features', fontsize=12)
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, 'ensemble_feature_importance.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"✅ Ensemble feature importance plot saved to {save_dir}/ensemble_feature_importance.png")
+    
+    # 4. Comparison Plot (if both models are available)
+    if tabnet_success and tabnet_importances is not None and xgb_importances is not None:
+        # Create comparison of top 10 features from each model
+        top_features = set(
+            list(tabnet_df.head(10)['Feature']) + 
+            list(xgb_df.head(10)['Feature'])
+        )
+        
+        comparison_data = []
+        for feature in top_features:
+            tabnet_imp = tabnet_df[tabnet_df['Feature'] == feature]['Importance'].iloc[0] if feature in tabnet_df['Feature'].values else 0
+            xgb_imp = xgb_df[xgb_df['Feature'] == feature]['Importance'].iloc[0] if feature in xgb_df['Feature'].values else 0
+            comparison_data.append({
+                'Feature': feature,
+                'TabNet': tabnet_imp,
+                'XGBoost': xgb_imp
+            })
+        
+        comparison_df = pd.DataFrame(comparison_data)
+        comparison_df = comparison_df.sort_values(['TabNet', 'XGBoost'], ascending=False).head(12)
+        
+        fig, ax = plt.subplots(figsize=(14, 8))
+        x = np.arange(len(comparison_df))
+        width = 0.35
+        
+        bars1 = ax.bar(x - width/2, comparison_df['TabNet'], width, label='TabNet', alpha=0.8)
+        bars2 = ax.bar(x + width/2, comparison_df['XGBoost'], width, label='XGBoost', alpha=0.8)
+        
+        ax.set_xlabel('Features', fontsize=12)
+        ax.set_ylabel('Feature Importance', fontsize=12)
+        ax.set_title('TabNet vs XGBoost Feature Importance Comparison', fontsize=16, fontweight='bold')
+        ax.set_xticks(x)
+        ax.set_xticklabels(comparison_df['Feature'], rotation=45, ha='right')
+        ax.legend()
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, 'model_comparison_feature_importance.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"✅ Model comparison plot saved to {save_dir}/model_comparison_feature_importance.png")
+
+
 def main():
     csv_path = "ward_london.csv"
     target_col = "burglary_count"
@@ -294,6 +507,12 @@ def main():
         X_test_tab_fixed = X_test_tabnet[:, var_mask].astype(np.float32)
         X_test_tab_fixed = np.nan_to_num(X_test_tab_fixed, nan=0.0, posinf=1e3, neginf=-1e3)
         X_test_tab_fixed = np.clip(X_test_tab_fixed, -1e3, 1e3)
+        
+        # Apply same mask to XGBoost data to ensure feature consistency
+        X_test_xgb_fixed = X_test_xgb[:, var_mask]
+        X_tr_xgb = X_tr_xgb[:, var_mask]
+        X_val_xgb = X_val_xgb[:, var_mask]
+        X_test_xgb = X_test_xgb_fixed
         
         # Debug inputs
         if not debug_tabnet_inputs(X_tr_tab_fixed, y_tr_fixed, X_val_tab_fixed, y_val_fixed, "Final"):
@@ -397,32 +616,118 @@ def main():
             final_predictions['xgboost'] = np.full(len(X_test_xgb), y_train_clean.mean())
 
         # === ENSEMBLE WITH OPTIMIZED WEIGHTS ===
-        if len(final_predictions) >= 2:
-            if tabnet_success:
-                # Both models working - optimize weights based on validation performance
-                if 'tabnet' in final_predictions and 'xgboost' in final_predictions:
-                    # Compare validation performance to set weights
-                    if val_metrics_tab['r2'] > val_metrics_xgb['r2']:
-                        # TabNet is better - give it more weight
-                        pred_ensemble = 0.6 * final_predictions['tabnet'] + 0.4 * final_predictions['xgboost']
-                        print("Using TabNet-favored ensemble (60-40)")
-                    elif val_metrics_xgb['r2'] > val_metrics_tab['r2'] + 0.05:
-                        # XGBoost is significantly better
-                        pred_ensemble = 0.4 * final_predictions['tabnet'] + 0.6 * final_predictions['xgboost']
-                        print("Using XGBoost-favored ensemble (40-60)")
-                    else:
-                        # Similar performance - balanced
-                        pred_ensemble = 0.5 * final_predictions['tabnet'] + 0.5 * final_predictions['xgboost']
-                        print("Using balanced ensemble (50-50)")
-                else:
-                    pred_ensemble = 0.5 * final_predictions['tabnet'] + 0.5 * final_predictions['xgboost']
-                    print("Using balanced ensemble (50-50)")
-            else:
-                # Only XGBoost working
+        if len(final_predictions) >= 2 and tabnet_success:
+            print("\n=== OPTIMIZING ENSEMBLE WEIGHTS ===")
+            
+            # Get validation predictions for weight optimization
+            val_pred_tab = tabnet_model.predict(X_val_tab_fixed).ravel()
+            val_pred_xgb = xgb_final.predict(X_val_xgb)
+            y_val_1d = y_val_fixed.ravel()
+            
+            # Find optimal weights using validation data
+            best_weight_rmse, best_rmse, weights, rmse_scores = find_optimal_ensemble_weights(
+                val_pred_tab, val_pred_xgb, y_val_1d, metric='rmse', n_points=101
+            )
+            
+            best_weight_mae, best_mae, _, mae_scores = find_optimal_ensemble_weights(
+                val_pred_tab, val_pred_xgb, y_val_1d, metric='mae', n_points=101
+            )
+            
+            best_weight_r2, best_r2, _, r2_scores = find_optimal_ensemble_weights(
+                val_pred_tab, val_pred_xgb, y_val_1d, metric='r2', n_points=101
+            )
+            
+            print(f"📊 Optimal weights found:")
+            print(f"   RMSE optimization: TabNet={best_weight_rmse:.3f}, XGBoost={1-best_weight_rmse:.3f} (RMSE: {best_rmse:.4f})")
+            print(f"   MAE optimization:  TabNet={best_weight_mae:.3f}, XGBoost={1-best_weight_mae:.3f} (MAE: {best_mae:.4f})")
+            print(f"   R² optimization:   TabNet={best_weight_r2:.3f}, XGBoost={1-best_weight_r2:.3f} (R²: {-best_r2:.4f})")
+            
+            # Use RMSE-optimized weights (most common for ensemble optimization)
+            optimal_weight = best_weight_rmse
+            
+            # Create optimized ensemble predictions
+            pred_ensemble = optimal_weight * final_predictions['tabnet'] + (1 - optimal_weight) * final_predictions['xgboost']
+            
+            print(f"🎯 Using RMSE-optimized ensemble: TabNet={optimal_weight:.3f}, XGBoost={1-optimal_weight:.3f}")
+            
+            # Plot optimization curve
+            plot_ensemble_optimization(weights, rmse_scores, best_weight_rmse, best_rmse, 'rmse')
+            
+            # Create comprehensive ensemble analysis plots
+            plot_ensemble_analysis(weights, rmse_scores, mae_scores, r2_scores, 
+                                  best_weight_rmse, best_weight_mae, best_weight_r2)
+            
+        elif len(final_predictions) >= 1:
+            # Only one model available
+            if 'xgboost' in final_predictions:
                 pred_ensemble = final_predictions['xgboost']
-                print("Using XGBoost only (TabNet failed)")
+                optimal_weight = 0.0
+                print("🔄 Using XGBoost only (TabNet failed)")
+            else:
+                pred_ensemble = final_predictions['tabnet']
+                optimal_weight = 1.0
+                print("🔄 Using TabNet only (XGBoost failed)")
         else:
-            pred_ensemble = list(final_predictions.values())[0]
+            print("❌ No models available for ensemble")
+            return
+
+        # === FEATURE IMPORTANCE ANALYSIS ===
+        print("\n=== EXTRACTING FEATURE IMPORTANCES ===")
+        
+        # Get feature names (after cleaning and encoding)
+        feature_names = list(X_train_clean.columns)
+        
+        # Apply the same variable mask that was used for TabNet to get consistent feature names
+        if 'var_mask' in locals():
+            feature_names_masked = [feature_names[i] for i in range(len(feature_names)) if var_mask[i]]
+        else:
+            feature_names_masked = feature_names
+        
+        # Extract TabNet feature importances
+        tabnet_importances = None
+        if tabnet_success:
+            try:
+                tabnet_importances = tabnet_model.feature_importances_
+                print(f"✅ TabNet feature importances extracted: shape {tabnet_importances.shape}")
+            except Exception as e:
+                print(f"⚠️ Could not extract TabNet importances: {e}")
+                tabnet_success = False
+        
+        # Extract XGBoost feature importances
+        xgb_importances = None
+        if 'xgb_final' in locals() and hasattr(xgb_final, 'feature_importances'):
+            try:
+                xgb_importances = xgb_final.feature_importances()
+                print(f"✅ XGBoost feature importances extracted: shape {xgb_importances.shape}")
+            except Exception as e:
+                print(f"⚠️ Could not extract XGBoost importances: {e}")
+        
+        # Create ensemble feature importances (weighted average using optimal weights)
+        ensemble_importances = None
+        if tabnet_success and tabnet_importances is not None and xgb_importances is not None:
+            # Use the mathematically optimal weights
+            ensemble_importances = optimal_weight * tabnet_importances + (1 - optimal_weight) * xgb_importances
+            print(f"✅ Created optimized ensemble importances ({optimal_weight:.3f}-{1-optimal_weight:.3f})")
+        elif xgb_importances is not None:
+            # Only XGBoost available
+            ensemble_importances = xgb_importances
+            optimal_weight = 0.0
+            print("✅ Using XGBoost importances as ensemble (TabNet failed)")
+        elif tabnet_importances is not None:
+            # Only TabNet available
+            ensemble_importances = tabnet_importances
+            optimal_weight = 1.0
+            print("✅ Using TabNet importances as ensemble (XGBoost failed)")
+        
+        # Generate feature importance plots
+        plot_feature_importances(
+            feature_names=feature_names_masked,
+            tabnet_importances=tabnet_importances,
+            xgb_importances=xgb_importances,
+            ensemble_importances=ensemble_importances,
+            tabnet_success=tabnet_success,
+            save_dir="feature_importance_plots"
+        )
 
         # === FINAL EVALUATION ===
         y_test_final = y_test_clean
